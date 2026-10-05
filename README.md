@@ -18,15 +18,36 @@ The current setup prompts and exported labels are in Russian; commands work as
 shown below.
 
 
-## Version 0.3: offline catch-up and mixed speech
+## Version 0.3.1: keep both parts of a bilingual recording
+
+Version 0.3.0 still selected one language for each decoder window of up to
+30 seconds. A short English → Russian or Russian → English message could lose
+an entire language portion. Simply shrinking the windows also lost boundary words.
+
+The logger now probes overlapping short windows, joins adjacent regions of one
+language, and checks speech on both sides of nearby pauses to choose a boundary.
+Each region is transcribed with its detected language. Unpaused boundaries use
+overlapping context and word timestamps for joining. JSONL `segments` now include
+their own `language`.
+
+This applies to voice messages, video notes, and ordinary video. Recognition stays
+local and needs more CPU. An opt-in real Whisper `small` regression test checks
+synthesized English/Russian speech through media decoding, SQLite, and exports.
+Single foreign words and rapid switches can still be misrecognized. The original
+reported voice note was not available for testing.
+
+After upgrading, run `speech auto` and `retranscribe --today` below. Existing
+transcripts require reprocessing; use `--days 7` for recordings on earlier dates.
+
+## Version 0.3.0: offline catch-up and mixed speech
 
 Linux now prefers a systemd user service, including in window managers without
 XDG Autostart. At startup the newest messages are imported first, followed by
 all messages after the saved checkpoint. Keeping the same export mode during
 an upgrade preserves its initial date and offline backlog.
 
-`auto` enables multilingual transcription with language detection per decoding
-segment. Old configurations default to this mode even when they saved
+`auto` enables multilingual transcription with language detection per speech
+region. Old configurations default to this mode even when they saved
 `language: "en"`. Named English-only models such as `small.en` are replaced by
 their multilingual counterpart, which may require a new download. Custom
 English-only models must be replaced explicitly with `speech auto --model small`.
@@ -285,7 +306,20 @@ On Windows, use `.venv\Scripts\python.exe`. Tests cover synchronization ordering
 deduplication, durable transcription jobs, media decoding, exports, day boundaries,
 DST, mode changes, and startup generation. The CI matrix runs Python 3.12 on
 Ubuntu, Windows, and macOS. Tests do not require Telegram credentials or download
-a Whisper model. See [VALIDATION.md](VALIDATION.md) for the real inference smoke test.
+a Whisper model by default. The four real speech tests are skipped in the fast
+suite and run in a separate Linux CI job. Run them locally with:
+
+```bash
+.venv/bin/python -m pip install '.[test,speech-test]'
+TGSTUDY_REAL_SPEECH=1 TGSTUDY_SPEECH_CACHE="$PWD/.speech-test-cache" \
+  .venv/bin/python -m pytest tests/test_speech_inference.py -q
+```
+
+This developer-only extra downloads Whisper `small` and two Piper synthesis
+voices to generate bilingual audio. Piper is not installed with the logger and
+is not used for chat transcription. The tests check both language orders in
+OGG/Opus and MP4/AAC through the real worker, SQLite, and Markdown/JSONL exports.
+They need no Telegram credentials. See [VALIDATION.md](VALIDATION.md) for results.
 
 Built with [Telethon](https://docs.telethon.dev/en/stable/),
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper), and

@@ -18,3 +18,21 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install '.[test]'
       - run: python -m pytest -q
+  speech-inference:
+    name: Real bilingual speech inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TGSTUDY_REAL_SPEECH: '1'
+      TGSTUDY_SPEECH_CACHE: ${{ github.workspace }}/.speech-test-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: .speech-test-cache
+          key: bilingual-small-piper-1.8-v1
+      - run: python -m pip install '.[test,speech-test]'
+      - run: python -m pytest tests/test_speech_inference.py -q

@@ -25,7 +25,7 @@ def telegram_client(cfg: Config, root: Path):
         cfg.api_id,
         cfg.api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.3.0",
+        app_version="0.3.1",
         flood_sleep_threshold=60,
         catch_up=True,
     )

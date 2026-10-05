@@ -77,7 +77,7 @@ async def setup(root: Path):
         api_id,
         api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.3.0",
+        app_version="0.3.1",
     )
     try:
         # This is the only place allowed to prompt for account authorization.
