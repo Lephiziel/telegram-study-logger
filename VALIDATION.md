@@ -1,11 +1,11 @@
 # Validation — 2026-10-05
 
-Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.2.0.
+Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.3.0.
 The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.
 
 ## Passed
 
-- 44 pytest checks, including real Telethon message objects (voice/video note/video),
+- 59 pytest checks, including real Telethon message objects (voice/video note/video),
   durable SQLite jobs, deduplication, media replacement, caption edits, per-chat
   isolation, timestamps, JSONL/Markdown exports, history/event checkpoint ordering,
   retries, file-size limits, and platform-specific startup file generation.
@@ -15,6 +15,19 @@ The same test suite also runs natively in the repository's three-OS GitHub Actio
   maintenance lock release, and watcher pause/configuration reload/restart.
 - System timezone detection, UTC fallback when unavailable, and preserving the
   timezone of an existing installation.
+- A reboot scenario closes/reopens the SQLite database and catches up 391 offline
+  messages, beyond the 200-message recent-edit window, without duplicates or a
+  live event skipping the history checkpoint. Interrupted imports resume safely.
+- Linux systemd startup generation, migration from XDG, uninstall, and XDG fallback
+  on service enable failure. Tests mock all startup side effects.
+- Upgrade mode selection retains the initial capture floor. Manual sync uses the
+  existing session and exports messages without requiring a desktop watcher.
+- Multilingual options bypass an old forced-English setting, preserve returned
+  Russian/mixed text, upgrade named English-only models, and reject custom
+  English-only models in multilingual mode. These are configuration/contract
+  tests with a test recognizer, not Russian speech quality measurements.
+- Reprocessing clears only speech results in the requested range and queues them
+  again, retaining original text and other dates.
 - Export tests explicitly read UTF-8 on every OS. The initial Windows CI run
   found that three tests incorrectly used Windows' default encoding; production
   export writing/reading already used explicit UTF-8.
@@ -48,7 +61,7 @@ and PyAV 16.1.0; the real OGG/MP4 tests and inference then passed.
   these require the owner's API credentials and one-time login on their computer.
   Telegram interactions in automated worker tests use a test client, while message
   metadata uses actual Telethon types.
-- A user's interactive Windows/macOS install and startup after an actual OS login.
+- A user's interactive install and startup after an actual OS login on any OS.
   Startup-file generation is tested, including on native GitHub Actions runners;
   this is distinct from launching Telegram in a real desktop session.
 - Whisper `small`/`medium` model quality, multilingual accents, long recordings,

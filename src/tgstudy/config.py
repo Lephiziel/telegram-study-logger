@@ -62,6 +62,7 @@ class Config:
     history_days: int = 30
     model: str = "small"
     language: str | None = None
+    multilingual: bool = True
     cpu_threads: int = 2
     transcribe_videos: bool = True
     max_media_mb: int = 100
@@ -76,6 +77,8 @@ class Config:
     )
 
     def validate(self) -> None:
+        if not isinstance(self.multilingual, bool):
+            raise ValueError("multilingual должен быть true или false")
         if self.api_id <= 0 or len(self.api_hash) != 32:
             raise ValueError("Некорректные Telegram API credentials")
         if not self.chat_id or not self.own_id or not self.output_dir:

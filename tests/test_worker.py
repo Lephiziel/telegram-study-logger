@@ -1,7 +1,11 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from conftest import message
 
+from tgstudy.config import Config
+from tgstudy.exporter import export_dirty
+from tgstudy.store import Store
 from tgstudy.worker import Worker
 
 
@@ -12,7 +16,10 @@ class Client:
 
     async def iter_messages(self, peer, **kwargs):
         self.kwargs = kwargs
-        for m in self.messages:
+        messages = self.messages
+        if not kwargs.get("reverse"):
+            messages = list(reversed(messages))[: kwargs.get("limit", len(messages))]
+        for m in messages:
             if m.id > kwargs.get("min_id", 0):
                 yield m
 
@@ -39,6 +46,61 @@ async def test_live_event_cannot_skip_unsynced_history(store, cfg, tmp_path):
     assert [store.get(20, i)["message_id"] for i in [1, 2, 3, 100]] == [1, 2, 3, 100]
     assert store.cursor(20) == 3
     assert client.kwargs["reverse"] is True
+
+
+async def test_reboot_catches_up_more_than_recent_window(cfg, tmp_path):
+    cfg.history_since = "2026-10-05T00:00:00+05:00"
+    cfg.export_mode = "daily"
+    cfg.save(tmp_path)
+    now = datetime(2026, 10, 5, 4, tzinfo=timezone.utc)
+    messages = [message(i, date=now + timedelta(seconds=i)) for i in range(1, 402)]
+    path = tmp_path / "journal.sqlite3"
+    db = Store(path)
+    worker = Worker(Client(messages[:10]), cfg, tmp_path, db, Recognizer())
+    await worker.sync_history()
+    assert db.cursor(20) == 10
+    db.close()  # PC shuts down; the remaining 391 messages arrive via phone.
+    db = Store(path)
+    loaded = Config.load(tmp_path)
+    worker = Worker(Client(messages), loaded, tmp_path, db, Recognizer())
+    await worker.ingest(message(1000, date=now + timedelta(seconds=1000)))
+    await worker.sync_once()
+    assert worker.last_sync_count == 391
+    assert db.cursor(20) == 401
+    assert all(db.get(20, i) is not None for i in range(1, 402))
+    export_dirty(db, cfg, now=now + timedelta(hours=2))
+    lines = (
+        (Path(cfg.output_dir) / "20/today.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(lines) == 402
+    await worker.sync_once()
+    assert worker.last_sync_count == 0
+    assert len(db.rows(20, "2026-10-05")) == 402
+    db.close()
+
+
+async def test_interrupted_history_resumes_from_persisted_cursor(cfg, tmp_path, store):
+    first = Worker(Client([message(1), message(2)]), cfg, tmp_path, store)
+    await first.sync_history()
+
+    class Interrupted(Client):
+        async def iter_messages(self, peer, **kwargs):
+            yield message(3)
+            raise ConnectionError("offline")
+
+    failing = Worker(Interrupted([]), cfg, tmp_path, store)
+    import pytest
+
+    with pytest.raises(ConnectionError):
+        await failing.sync_history()
+    assert store.cursor(20) == 3
+    resumed = Worker(
+        Client([message(1), message(2), message(3), message(4)]), cfg, tmp_path, store
+    )
+    await resumed.sync_history()
+    assert store.get(20, 4) is not None and store.cursor(20) == 4
 
 
 async def test_transcription_pipeline_cleans_temporary_media(store, cfg, tmp_path):

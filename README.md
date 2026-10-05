@@ -17,6 +17,63 @@ loaded inside Telegram Desktop or a signed Windows/macOS application.
 The current setup prompts and exported labels are in Russian; commands work as
 shown below.
 
+
+## Version 0.3: offline catch-up and mixed speech
+
+Linux now prefers a systemd user service, including in window managers without
+XDG Autostart. At startup the newest messages are imported first, followed by
+all messages after the saved checkpoint. Keeping the same export mode during
+an upgrade preserves its initial date and offline backlog.
+
+`auto` enables multilingual transcription with language detection per decoding
+segment. Old configurations default to this mode even when they saved
+`language: "en"`. Named English-only models such as `small.en` are replaced by
+their multilingual counterpart, which may require a new download. Custom
+English-only models must be replaced explicitly with `speech auto --model small`.
+
+The task is always `transcribe`, never `translate`. English and Russian can both
+appear in a mixed transcript. Whisper may still misrecognize or normalize a
+short language switch, especially one word: verbatim accuracy is not guaranteed.
+Try `medium` or `large-v3` for difficult speech; these need more memory and CPU.
+`transcript_language` describes the initial detected language, not all languages
+present in mixed speech. Existing transcripts are not changed until reprocessed.
+
+### Upgrade an existing Linux/macOS installation
+
+Git must be installed. Use the existing runtime Python (no system Python upgrade):
+
+```bash
+TGSTUDY_PY="$HOME/.local/share/telegram-study-logger/runtime/bin/python"
+"$TGSTUDY_PY" -m tgstudy uninstall
+# Wait for the watcher/worker to stop (up to a minute), then continue.
+"$TGSTUDY_PY" -m pip install --upgrade 'git+https://github.com/Lephiziel/telegram-study-logger.git'
+"$TGSTUDY_PY" -m tgstudy speech auto
+"$TGSTUDY_PY" -m tgstudy install
+"$TGSTUDY_PY" -m tgstudy sync
+"$TGSTUDY_PY" -m tgstudy retranscribe --today
+```
+
+Alternatively download the ZIP and rerun your OS installer. The account session,
+chat, and archive are retained. `sync` fetches messages immediately without
+requiring the watcher. `retranscribe` clears old speech results for the selected
+period and queues the stored recordings for download/recognition again. It keeps
+original message text. Use `--days 7` for seven calendar days, or `--days 0` for all
+stored recordings. Leave Telegram open until processing finishes.
+
+Additional commands:
+
+```bash
+"$TGSTUDY_PY" -m tgstudy speech auto --model medium
+"$TGSTUDY_PY" -m tgstudy speech ru  # Explicit single-language mode
+"$TGSTUDY_PY" -m tgstudy status
+```
+
+`status` now checks whether Telegram is detected and watcher/worker process locks
+are actually held; a stale `working` file alone does not prove a process is alive.
+It also shows `history_error`, last synchronization time, and the checkpoint.
+On Linux, check `systemctl --user status telegram-study-logger.service`.
+Do not share `config.json` or `account.session` when reporting issues.
+
 ## Export modes
 
 | Mode | Behavior | Main files |
@@ -104,8 +161,9 @@ To select another installed Python:
 TGSTUDY_PYTHON=/usr/bin/python3.12 bash install-linux.sh
 ```
 
-Startup uses XDG Autostart, as supported by GNOME/KDE. A standalone window manager
-may need its own startup entry running the installed Python with `-m tgstudy watch`.
+Startup prefers a systemd user service. If a user systemd manager is unavailable,
+it falls back to XDG Autostart as supported by GNOME/KDE. A window manager without
+either may need its own startup entry using the installed Python with `-m tgstudy watch`.
 See [the Russian startup instructions](README_RU.md#автозапуск-для-самостоятельного-оконного-менеджера).
 
 ### One-time setup
@@ -117,8 +175,8 @@ See [the Russian startup instructions](README_RU.md#автозапуск-для-
    The code/password are not saved. An additional Telegram session is created.
 3. Search for your chat by name and select its number.
 4. Confirm timezone, export mode, output folder, speech model, and language.
-   Daily mode is the default for a new installation. `auto` detects the language;
-   `en` forces English. `small` is the default model; `base` is lighter.
+   Daily mode is the default for a new installation. `auto` supports mixed speech;
+   `en`/`ru` explicitly force a single language. `small` is the default model; `base` is lighter.
 5. Download the model when prompted. This normally happens once.
 
 The installer copies the package into a persistent virtual environment. You can
@@ -167,7 +225,8 @@ $TgStudyPython = "$env:LOCALAPPDATA\TelegramStudyLogger\runtime\Scripts\python.e
 | `setup` | Change account/chat, timezone, model, or other setup choices |
 
 Before `setup`, run `uninstall` and allow up to a minute for shutdown. `settings`,
-`mode`, `export`, and `retry` coordinate with the running worker automatically.
+`mode`, `export`, `sync`, `speech`, `retranscribe`, and `retry` coordinate with
+the running worker automatically.
 A historical export waits for available recordings to be processed and can take
 a long time. Errors are reported instead of blocking forever.
 

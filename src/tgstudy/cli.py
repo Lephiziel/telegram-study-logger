@@ -14,15 +14,15 @@ import portalocker
 from telethon import TelegramClient, utils
 
 from .config import Config, data_dir, default_timezone, status_write
-from .control import lock, maintenance
+from .control import instance_running, lock, maintenance
 from .exporter import export_dirty
 from .history import export_history
-from .periods import set_period
+from .periods import day_window, keep_period, set_period
 from .startup import install_autostart, remove_autostart
 from .store import Store
 from .transcribe import Transcriber
-from .watcher import watch
-from .worker import run_worker
+from .watcher import telegram_running, watch
+from .worker import run_worker, sync_now
 
 
 def prompt(label: str, default: str = "") -> str:
@@ -42,7 +42,7 @@ def choose_mode(cfg: Config):
         if mode == "history"
         else None
     )
-    set_period(cfg, mode, days)
+    keep_period(cfg, mode, days)
 
 
 def save_mode(root: Path, cfg: Config):
@@ -77,7 +77,7 @@ async def setup(root: Path):
         api_id,
         api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.2.0",
+        app_version="0.3.0",
     )
     try:
         # This is the only place allowed to prompt for account authorization.
@@ -141,8 +141,10 @@ async def setup(root: Path):
             previous.model if previous else "small",
         )
         lang = prompt(
-            "Язык: auto / en / ru / другой код",
-            previous.language or "auto" if previous else "auto",
+            "Язык: auto (смесь языков) / en / ru / другой код (один язык)",
+            ("auto" if previous.multilingual else previous.language or "auto")
+            if previous
+            else "auto",
         )
         cfg = Config(
             api_id=api_id,
@@ -154,6 +156,7 @@ async def setup(root: Path):
             timezone=tz,
             model=model,
             language=None if lang == "auto" else lang,
+            multilingual=lang == "auto",
         )
         set_period(cfg, mode, days)
         store = Store(root / "journal.sqlite3")
@@ -217,6 +220,7 @@ def main():
         "status",
         "retry",
         "paths",
+        "sync",
     ):
         sub.add_parser(name)
     period = sub.add_parser("mode", help="Выбрать режим без повторной авторизации")
@@ -236,6 +240,15 @@ def main():
     )
     worker = sub.add_parser("worker")
     worker.add_argument("--stop-file", type=Path)
+    speech = sub.add_parser("speech", help="Языки распознавания без повторного входа")
+    speech.add_argument("language", help="auto для смеси языков; en/ru для одного")
+    speech.add_argument("--model", help="small/medium/large-v3 или локальная модель")
+    retranscribe = sub.add_parser(
+        "retranscribe", help="Заново распознать сохранённые записи"
+    )
+    scope = retranscribe.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--days", type=int, help="N дней, включая сегодня; 0 = всё")
+    scope.add_argument("--today", action="store_true")
     args = parser.parse_args()
     root = data_dir()
     configure_logging(root)
@@ -285,6 +298,54 @@ def main():
                 status.read_text(encoding="utf-8")
                 if status.exists()
                 else "Пока не запущено; выполни setup."
+            )
+            if (root / "config.json").exists():
+                cfg = Config.load(root)
+                print(f"Наблюдатель запущен: {instance_running(root, 'watcher')}")
+                print(f"Обработчик запущен: {instance_running(root, 'worker')}")
+                print(f"Telegram найден: {telegram_running(cfg.process_names)}")
+                print(
+                    f"Распознавание: {'auto/multilingual' if cfg.multilingual else cfg.language or 'auto/single'}; модель: {cfg.model}"
+                )
+        elif args.cmd == "sync":
+            cfg = Config.load(root)
+            print("Догрузка сообщений из Telegram…", flush=True)
+            with maintenance(root):
+                count = asyncio.run(sync_now(root, cfg))
+            print(
+                f"История синхронизирована; сообщений после контрольной точки: {count}."
+            )
+        elif args.cmd == "speech":
+            cfg = Config.load(root)
+            cfg.multilingual = args.language == "auto"
+            cfg.language = None if cfg.multilingual else args.language
+            if args.model:
+                cfg.model = args.model
+            if cfg.multilingual and cfg.model in {
+                "tiny.en",
+                "base.en",
+                "small.en",
+                "medium.en",
+            }:
+                cfg.model = cfg.model.removesuffix(".en")
+            with maintenance(root):
+                cfg.save(root)
+            print(
+                "Настройки распознавания сохранены. Для старых расшифровок используй retranscribe."
+            )
+        elif args.cmd == "retranscribe":
+            cfg = Config.load(root)
+            days = 1 if args.today else args.days
+            _, _, start, end = day_window(cfg.timezone, days)
+            with maintenance(root):
+                store = Store(root / "journal.sqlite3")
+                try:
+                    count = store.retranscribe(cfg.chat_id, start, end)
+                    export_dirty(store, cfg)
+                finally:
+                    store.close()
+            print(
+                f"Записей поставлено на повторную расшифровку: {count}. Оставь Telegram открытым."
             )
         elif args.cmd == "mode":
             cfg = Config.load(root)

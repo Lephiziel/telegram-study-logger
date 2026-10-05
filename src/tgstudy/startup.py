@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,62 @@ from pathlib import Path
 from .config import atomic_text
 
 LABEL = "local.telegram-study-logger"
+SERVICE = "telegram-study-logger.service"
+
+
+def systemd_path() -> Path:
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "systemd/user"
+        / SERVICE
+    )
+
+
+def systemctl(*args) -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=70,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def systemd_quote(value: str, *, executable: bool = False) -> str:
+    value = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    if executable:
+        value = value.replace("$", "$$")
+    return '"' + value + '"'
+
+
+def install_systemd(root: Path, cmd: list[str]) -> Path | None:
+    # Test availability before writing a unit on non-systemd desktop sessions.
+    if not systemctl("show-environment"):
+        return None
+    path = systemd_path()
+    atomic_text(
+        path,
+        "[Unit]\nDescription=Telegram Study Logger watcher\n\n[Service]\n"
+        + "Type=simple\nExecStart="
+        + " ".join(systemd_quote(p, executable=True) for p in cmd)
+        + "\nEnvironment="
+        + systemd_quote(f"TGSTUDY_DATA_DIR={root}")
+        + "\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\n"
+        + "\n[Install]\nWantedBy=default.target\n",
+    )
+    if systemctl("daemon-reload") and systemctl("enable", "--now", SERVICE):
+        return path
+    systemctl("disable", "--now", SERVICE)
+    path.unlink(missing_ok=True)
+    systemctl("daemon-reload")
+    return None
 
 
 def python_background() -> str:
@@ -69,6 +126,12 @@ def desktop_quote(part: str) -> str:
 def install_autostart(root: Path) -> Path:
     path = startup_path()
     cmd = command("watch")
+    (root / "watcher-stop").unlink(missing_ok=True)
+    if sys.platform not in {"win32", "darwin"}:
+        service = install_systemd(root, cmd)
+        if service:
+            path.unlink(missing_ok=True)  # Migrate the old XDG startup entry.
+            return service
     if sys.platform == "win32":
         line = subprocess.list2cmdline(cmd).replace('"', '""')
         content = f'Set sh = CreateObject("WScript.Shell")\nsh.Run "{line}", 0, False\n'
@@ -118,3 +181,7 @@ def remove_autostart(root: Path):
     path.unlink(missing_ok=True)
     (root / "watcher-stop").touch()
     (root / "worker-stop").touch()
+    if sys.platform not in {"win32", "darwin"} and systemd_path().exists():
+        systemctl("disable", "--now", SERVICE)
+        systemd_path().unlink(missing_ok=True)
+        systemctl("daemon-reload")

@@ -25,6 +25,8 @@ def test_autostart_generation(system, tmp_path, monkeypatch):
     target = tmp_path / "autostart file"
     monkeypatch.setattr(startup.sys, "platform", system)
     monkeypatch.setattr(startup, "startup_path", lambda: target)
+    monkeypatch.setattr(startup, "systemctl", lambda *args: False)
+    monkeypatch.setattr(startup, "systemd_path", lambda: tmp_path / "test.service")
     monkeypatch.setattr(
         startup,
         "command",
@@ -52,6 +54,63 @@ def test_autostart_generation(system, tmp_path, monkeypatch):
     startup.remove_autostart(root)
     assert not target.exists()
     assert (root / "watcher-stop").exists()
+
+
+def test_systemd_startup_migrates_xdg_and_stops_on_uninstall(tmp_path, monkeypatch):
+    root = tmp_path / "private data"
+    root.mkdir()
+    xdg = tmp_path / "old.desktop"
+    xdg.write_text("old startup", encoding="utf-8")
+    service = tmp_path / "unit.service"
+    calls = []
+    monkeypatch.setattr(startup.sys, "platform", "linux")
+    monkeypatch.setattr(startup, "startup_path", lambda: xdg)
+    monkeypatch.setattr(startup, "systemd_path", lambda: service)
+    monkeypatch.setattr(
+        startup, "command", lambda mode: ["/usr/bin/python", "-m", "tgstudy", mode]
+    )
+    monkeypatch.setattr(startup, "systemctl", lambda *args: calls.append(args) or True)
+    monkeypatch.setattr(
+        startup, "spawn", lambda *args: pytest.fail("systemd owns the watcher")
+    )
+    (root / "watcher-stop").touch()
+    assert startup.install_autostart(root) == service
+    text = service.read_text(encoding="utf-8")
+    assert "WantedBy=default.target" in text
+    assert "Restart=on-failure" in text
+    assert "TGSTUDY_DATA_DIR=" in text
+    assert not xdg.exists()
+    assert not (root / "watcher-stop").exists()
+    assert ("enable", "--now", startup.SERVICE) in calls
+    startup.remove_autostart(root)
+    assert not service.exists()
+    assert ("disable", "--now", startup.SERVICE) in calls
+
+
+def test_failed_systemd_enable_falls_back_to_xdg(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    root.mkdir()
+    xdg = tmp_path / "fallback.desktop"
+    service = tmp_path / "failed.service"
+    started = []
+    monkeypatch.setattr(startup.sys, "platform", "linux")
+    monkeypatch.setattr(startup, "startup_path", lambda: xdg)
+    monkeypatch.setattr(startup, "systemd_path", lambda: service)
+    monkeypatch.setattr(startup, "systemctl", lambda *args: args[0] != "enable")
+    monkeypatch.setattr(startup, "spawn", lambda mode: started.append(mode))
+    assert startup.install_autostart(root) == xdg
+    assert xdg.exists() and not service.exists()
+    assert started == ["watch"]
+
+
+def test_systemd_quotes_literal_expansion_characters():
+    assert (
+        startup.systemd_quote("/tmp/50%/$chat", executable=True) == '"/tmp/50%%/$$chat"'
+    )
+    assert (
+        startup.systemd_quote("TGSTUDY_DATA_DIR=/tmp/$chat")
+        == '"TGSTUDY_DATA_DIR=/tmp/$chat"'
+    )
 
 
 def test_watcher_pauses_for_settings_and_restarts_with_new_mode(

@@ -201,6 +201,29 @@ class Store:
                 (chat,),
             )
 
+    def retranscribe(self, chat: int, start, end) -> int:
+        query = (
+            "SELECT message_id, day FROM messages WHERE chat_id=? "
+            "AND media_key IS NOT NULL AND transcription_state!='not_applicable' "
+            "AND date_utc<?"
+        )
+        params = [chat, end.isoformat()]
+        if start is not None:
+            query += " AND date_utc>=?"
+            params.append(start.isoformat())
+        rows = self.db.execute(query, params).fetchall()
+        with self.db:
+            for row in rows:
+                self.db.execute(
+                    """UPDATE messages SET transcription_state='pending',
+                    transcript=NULL, transcript_language=NULL, segments=NULL,
+                    attempts=0, retry_at=0, error=NULL
+                    WHERE chat_id=? AND message_id=?""",
+                    (chat, row["message_id"]),
+                )
+                self._dirty(chat, row["day"])
+        return len(rows)
+
     def counts(self, chat: int):
         return dict(
             self.db.execute(

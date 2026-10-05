@@ -12,7 +12,7 @@ from tgstudy.config import Config
 from tgstudy.control import lock, maintenance, maintenance_running
 from tgstudy.exporter import export_dirty
 from tgstudy.history import export_history
-from tgstudy.periods import day_window, set_period
+from tgstudy.periods import day_window, keep_period, set_period
 from tgstudy.worker import Worker
 
 NOW = datetime(2026, 10, 5, 1, 55, tzinfo=timezone.utc)
@@ -49,6 +49,40 @@ def test_modes_persist_initial_floor_for_offline_backfill(cfg, tmp_path):
     set_period(cfg, "history", 7, now=NOW)
     assert cfg.history_days == 7
     assert datetime.fromisoformat(cfg.history_since) == local_midnight("2026-09-29")
+
+
+def test_upgrade_keeps_offline_floor_when_mode_unchanged(cfg):
+    set_period(cfg, "daily", now=NOW - timedelta(days=3))
+    floor = cfg.history_since
+    keep_period(cfg, "daily")
+    assert cfg.history_since == floor
+    set_period(cfg, "history", 7, now=NOW - timedelta(days=3))
+    floor = cfg.history_since
+    keep_period(cfg, "history", 7)
+    assert cfg.history_since == floor
+
+
+async def test_retranscribe_resets_only_media_in_requested_period(store, cfg):
+    for mid, kind, date in [
+        (1, "voice", "2026-10-04"),
+        (2, "voice", "2026-10-05"),
+        (3, "video_note", "2026-10-05"),
+        (4, "text", "2026-10-05"),
+    ]:
+        store.upsert(
+            await to_record(message(mid, kind=kind, date=local_midnight(date)), cfg)
+        )
+        if kind != "text":
+            store.result(
+                20, mid, state="done", transcript="Wrong translation", language="en"
+            )
+    _, _, start, end = day_window(cfg.timezone, 1, NOW)
+    assert store.retranscribe(20, start, end) == 2
+    assert store.get(20, 1)["transcript"] == "Wrong translation"
+    assert store.get(20, 4)["transcription_state"] == "not_applicable"
+    assert store.get(20, 2)["transcript"] is None
+    assert store.get(20, 3)["transcription_state"] == "pending"
+    assert store.get(20, 3)["attempts"] == 0
 
 
 def test_old_config_loads_with_defaults(cfg, tmp_path):
@@ -91,11 +125,15 @@ async def test_history_view_excludes_old_records_and_rolls_tomorrow(store, cfg):
         store.upsert(await to_record(message(mid, date=local_midnight(date)), cfg))
     export_dirty(store, cfg, now=NOW)
     path = Path(cfg.output_dir) / "20/history_7_days.jsonl"
-    ids = [json.loads(line)["message_id"] for line in path.read_text(encoding="utf-8").splitlines()]
+    ids = [
+        json.loads(line)["message_id"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
     assert ids == [2, 3]
     export_dirty(store, cfg, now=NOW + timedelta(days=1))
     assert [
-        json.loads(line)["message_id"] for line in path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)["message_id"]
+        for line in path.read_text(encoding="utf-8").splitlines()
     ] == [3]
     assert (path.parent / "2026-09-29.md").exists()
 

@@ -25,7 +25,7 @@ def telegram_client(cfg: Config, root: Path):
         cfg.api_id,
         cfg.api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.2.0",
+        app_version="0.3.0",
         flood_sleep_threshold=60,
         catch_up=True,
     )
@@ -43,6 +43,7 @@ class Worker:
         self.last_sync = None
         self.current_job = None
         self.history_error = None
+        self.last_sync_count = 0
         self.since = (
             datetime.fromisoformat(cfg.history_since) if cfg.history_since else None
         )
@@ -69,6 +70,13 @@ class Worker:
                 # Yield so recognition/events can run during a large initial import.
                 await asyncio.sleep(0)
         self.last_sync = time.time()
+        self.last_sync_count = count
+
+    async def sync_once(self):
+        # Show the newest messages first, even if the initial import is long.
+        # Refresh never advances the ordered history checkpoint.
+        await self.refresh_recent()
+        await self.sync_history()
 
     async def refresh_recent(self):
         # Recover caption/text edits made while the module was offline.
@@ -89,8 +97,7 @@ class Worker:
         while not self.stop.is_set():
             delay = self.cfg.poll_seconds
             try:
-                await self.sync_history()
-                await self.refresh_recent()
+                await self.sync_once()
                 self.history_error = None
             except FloodWaitError as exc:
                 delay = max(delay, exc.seconds + 1)
@@ -190,6 +197,8 @@ class Worker:
                 export_mode=self.cfg.export_mode,
                 history_days=self.cfg.history_days,
                 last_sync=self.last_sync,
+                last_sync_count=self.last_sync_count,
+                history_cursor=self.store.cursor(self.cfg.chat_id),
                 current_job=self.current_job,
                 history_error=self.history_error,
                 counts=self.store.counts(self.cfg.chat_id),
@@ -203,7 +212,7 @@ class Worker:
                 break
             await self.wait(1)
 
-    async def run(self, stop_file: Path):
+    async def connect(self):
         await self.client.connect()
         if not await self.client.is_user_authorized():
             status_write(self.root, state="authorization_required")
@@ -212,6 +221,9 @@ class Worker:
         if me.id != self.cfg.own_id:
             raise RuntimeError("SessionAccountMismatchRunSetup")
         self.peer = await self.client.get_input_entity(self.cfg.chat_id)
+
+    async def run(self, stop_file: Path):
+        await self.connect()
 
         async def on_message(event):
             if event.chat_id == self.cfg.chat_id and not self.stop.is_set():
@@ -254,6 +266,34 @@ async def run_worker(root: Path, stop_file: Path):
     client = telegram_client(cfg, root)
     try:
         await Worker(client, cfg, root, store).run(stop_file)
+    finally:
+        await client.disconnect()
+        store.close()
+
+
+async def sync_now(root: Path, cfg: Config):
+    """Explicit catch-up independent of watcher, desktop, or transcription load."""
+    store = Store(root / "journal.sqlite3")
+    client = telegram_client(cfg, root)
+    try:
+        worker = Worker(client, cfg, root, store)
+        status_write(root, state="syncing", chat_id=cfg.chat_id)
+        await worker.connect()
+        await worker.sync_once()
+        export_dirty(store, cfg)
+        status_write(
+            root,
+            state="synced",
+            chat_id=cfg.chat_id,
+            last_sync=worker.last_sync,
+            last_sync_count=worker.last_sync_count,
+            history_cursor=store.cursor(cfg.chat_id),
+            counts=store.counts(cfg.chat_id),
+        )
+        return worker.last_sync_count
+    except Exception as exc:
+        status_write(root, state="sync_error", error=type(exc).__name__)
+        raise
     finally:
         await client.disconnect()
         store.close()

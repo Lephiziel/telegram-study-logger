@@ -15,12 +15,16 @@ def lock(root: Path, name: str, timeout: int = 0):
     )
 
 
-def maintenance_running(root: Path) -> bool:
+def instance_running(root: Path, name: str) -> bool:
     try:
-        with lock(root, "maintenance"):
+        with lock(root, name):
             return False
     except portalocker.exceptions.LockException:
         return True
+
+
+def maintenance_running(root: Path) -> bool:
+    return instance_running(root, "maintenance")
 
 
 @contextmanager

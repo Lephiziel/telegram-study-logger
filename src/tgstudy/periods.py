@@ -44,3 +44,11 @@ def set_period(
     # Persist this initial floor so an offline day is backfilled on the next start.
     cfg.history_since = start.isoformat() if start else None
     cfg.validate()
+
+
+def keep_period(cfg: Config, mode: str, days: int | None = None):
+    """Do not lose an offline backlog when an upgrade keeps the same mode."""
+    if mode == cfg.export_mode and (days is None or days == cfg.history_days):
+        cfg.validate()
+        return
+    set_period(cfg, mode, days)
