@@ -1,6 +1,7 @@
 # Validation — 2026-10-05
 
 Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.2.0.
+The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.
 
 ## Passed
 
@@ -14,6 +15,9 @@ Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.2.0.
   maintenance lock release, and watcher pause/configuration reload/restart.
 - System timezone detection, UTC fallback when unavailable, and preserving the
   timezone of an existing installation.
+- Export tests explicitly read UTF-8 on every OS. The initial Windows CI run
+  found that three tests incorrectly used Windows' default encoding; production
+  export writing/reading already used explicit UTF-8.
 - A one-off historical import with a test client verifies that older voice messages
   are fetched/transcribed/exported while the configured daily mode and continuous
   history checkpoint remain unchanged.
@@ -44,9 +48,9 @@ and PyAV 16.1.0; the real OGG/MP4 tests and inference then passed.
   these require the owner's API credentials and one-time login on their computer.
   Telegram interactions in automated worker tests use a test client, while message
   metadata uses actual Telethon types.
-- Native execution on Windows and macOS; their startup files were generated and
-  inspected through automated tests on Linux. A three-OS GitHub Actions workflow is
-  included; its latest results are available in the repository's Actions tab.
+- A user's interactive Windows/macOS install and startup after an actual OS login.
+  Startup-file generation is tested, including on native GitHub Actions runners;
+  this is distinct from launching Telegram in a real desktop session.
 - Whisper `small`/`medium` model quality, multilingual accents, long recordings,
   and every supported hardware configuration. The actual inference smoke test used
   `tiny.en`; setup defaults to multilingual `small`.

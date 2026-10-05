@@ -44,7 +44,7 @@ def test_autostart_generation(system, tmp_path, monkeypatch):
         assert ", 0, False" in text
         assert "TGSTUDY_DATA_DIR" in text
     else:
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         assert "Terminal=false" in text
         assert '"/path with spaces/python"' in text
         assert "TGSTUDY_DATA_DIR" in text

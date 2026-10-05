@@ -25,7 +25,7 @@ async def test_deduplicated_daily_export_and_duration(store, cfg):
     assert export_dirty(store, cfg) == 1
     assert export_dirty(store, cfg) == 0
     path = Path(cfg.output_dir) / "20/2026-10-05.jsonl"
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     r = json.loads(lines[0])
     assert r["duration_seconds"] == 12
@@ -33,7 +33,7 @@ async def test_deduplicated_daily_export_and_duration(store, cfg):
     assert r["text"] == "Hello"
     assert r["transcript_source"] == "local_whisper"
     assert r["date_local"].startswith("2026-10-05T01:30")
-    assert r["transcript"] in path.with_suffix(".md").read_text()
+    assert r["transcript"] in path.with_suffix(".md").read_text(encoding="utf-8")
 
 
 async def test_caption_edit_preserves_transcript_and_media_edit_resets(store, cfg):

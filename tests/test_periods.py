@@ -55,7 +55,7 @@ def test_old_config_loads_with_defaults(cfg, tmp_path):
     old = asdict(cfg)
     old.pop("export_mode")
     old.pop("history_days")
-    (tmp_path / "config.json").write_text(json.dumps(old))
+    (tmp_path / "config.json").write_text(json.dumps(old), encoding="utf-8")
     assert Config.load(tmp_path).export_mode == "history"
 
 
@@ -71,18 +71,18 @@ async def test_daily_midnight_keeps_yesterday_and_switches_today(store, cfg):
     store.upsert(await to_record(old, cfg))
     export_dirty(store, cfg, now=NOW)
     root = Path(cfg.output_dir) / "20"
-    before = (root / "2026-10-05.md").read_text()
-    assert "#1" in (root / "today.md").read_text()
+    before = (root / "2026-10-05.md").read_text(encoding="utf-8")
+    assert "#1" in (root / "today.md").read_text(encoding="utf-8")
     tomorrow = local_midnight("2026-10-06")
     export_dirty(store, cfg, now=tomorrow)
-    assert (root / "2026-10-05.md").read_text() == before
+    assert (root / "2026-10-05.md").read_text(encoding="utf-8") == before
     assert (root / "2026-10-06.md").exists()
-    assert (root / "today.jsonl").read_text() == ""
+    assert (root / "today.jsonl").read_text(encoding="utf-8") == ""
     # A late transcript is written into yesterday's archive, not today's view.
     store.result(20, 1, state="done", transcript="Yesterday's speech", language="en")
     export_dirty(store, cfg, now=tomorrow)
-    assert "Yesterday's speech" in (root / "2026-10-05.md").read_text()
-    assert "Yesterday's speech" not in (root / "today.md").read_text()
+    assert "Yesterday's speech" in (root / "2026-10-05.md").read_text(encoding="utf-8")
+    assert "Yesterday's speech" not in (root / "today.md").read_text(encoding="utf-8")
 
 
 async def test_history_view_excludes_old_records_and_rolls_tomorrow(store, cfg):
@@ -91,11 +91,11 @@ async def test_history_view_excludes_old_records_and_rolls_tomorrow(store, cfg):
         store.upsert(await to_record(message(mid, date=local_midnight(date)), cfg))
     export_dirty(store, cfg, now=NOW)
     path = Path(cfg.output_dir) / "20/history_7_days.jsonl"
-    ids = [json.loads(line)["message_id"] for line in path.read_text().splitlines()]
+    ids = [json.loads(line)["message_id"] for line in path.read_text(encoding="utf-8").splitlines()]
     assert ids == [2, 3]
     export_dirty(store, cfg, now=NOW + timedelta(days=1))
     assert [
-        json.loads(line)["message_id"] for line in path.read_text().splitlines()
+        json.loads(line)["message_id"] for line in path.read_text(encoding="utf-8").splitlines()
     ] == [3]
     assert (path.parent / "2026-09-29.md").exists()
 
@@ -183,7 +183,7 @@ async def test_one_off_export_fetches_older_days_without_changing_daily_mode(
         tmp_path, cfg, 7, now=NOW, client=client, transcriber=Recognizer()
     )
     assert count == 2 and errors == 0
-    assert "Historical voice" in path.read_text()
+    assert "Historical voice" in path.read_text(encoding="utf-8")
     assert cfg.export_mode == "daily" and cfg.history_since == saved_since
     assert client.disconnected
     from tgstudy.store import Store
