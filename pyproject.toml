@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-study-logger"
+version = "0.2.0"
+description = "Local automatic Telegram chat journal with voice and video transcription"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "Telethon==1.45.0",
+  "psutil>=6,<8",
+  "platformdirs>=4,<5",
+  "portalocker>=3,<4",
+  "faster-whisper==1.2.1",
+  "av==16.1.0",
+  "httpx[socks]>=0.27,<1",
+  "tzdata>=2025.1",
+  "tzlocal>=5,<6",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2"]
+
+[project.scripts]
+tgstudy = "tgstudy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
