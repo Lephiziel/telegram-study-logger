@@ -52,6 +52,23 @@ https://github.com/openai/whisper/blob/main/tests/jfk.flac
 
 ## Watcher shutdown recovery in 0.4.1
 
+The 0.4.1 GitHub Actions matrix passed all 109 fast checks on Windows,
+macOS and Linux. A separate Linux subprocess exercise started the watcher twice
+and delivered a real SIGTERM each time, verifying graceful worker shutdown and
+successful next startup with a stale stop file from the previous version.
+
+**The full 0.4.1 workflow is not green.** Its independently regenerated synthetic
+speech produced inconsistent recognition of the greeting/name on two inference
+attempts (2/5 and then 5/5 failed). The first run missed “Hello” in one case and
+returned “Aidan” instead of the test's exact “Aiden”; the second returned other
+variants and failed the long clip's initial greeting assertion. Speech code and
+dependency versions match the previously successful 0.4.0 run. This is an
+unresolved ASR/fixture stability limitation, not a watcher startup failure; the
+shutdown patch does not claim to fix it. Earlier speech measurements below are
+historical results, not a claim that the current inference checks passed.
+
+Workflow: https://github.com/Lephiziel/telegram-study-logger/actions/runs/37499984165
+
 Three new regression cases fail on 0.4.0 and pass after the fix. They simulate
 SIGTERM and SIGINT followed by a second watcher start, plus a stop file left by
 a previous process. They verify that Telegram's worker starts again, is stopped
