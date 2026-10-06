@@ -35,6 +35,10 @@ def telegram_running(names: list[str], processes=None) -> bool:
 
 
 def watch(root: Path):
+    # The CLI holds the watcher lock before entering here. A stop request left
+    # by the previous process must not disable a newly started watcher.
+    exit_file = root / "watcher-stop"
+    exit_file.unlink(missing_ok=True)
     cfg = Config.load(root)
     child = None
     absent_since = None
@@ -42,15 +46,17 @@ def watch(root: Path):
     stopping_since = None
     retries = 0
     stop_file = root / "worker-stop"
-    exit_file = root / "watcher-stop"
+    stop_requested = False
 
     def signal_stop(*_):
-        exit_file.touch()
+        # OS shutdown stops this process, not the next login's process.
+        nonlocal stop_requested
+        stop_requested = True
 
     signal.signal(signal.SIGTERM, signal_stop)
     signal.signal(signal.SIGINT, signal_stop)
     try:
-        while not exit_file.exists():
+        while not stop_requested and not exit_file.exists():
             now = time.monotonic()
             paused = maintenance_running(root)
             if not paused:

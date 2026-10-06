@@ -157,3 +157,74 @@ def test_watcher_pauses_for_settings_and_restarts_with_new_mode(
     monkeypatch.setattr(watcher.signal, "signal", lambda *args: None)
     watcher.watch(tmp_path)
     assert started == ["history", "daily"]
+
+
+def test_watcher_ignores_stop_files_left_by_previous_process(cfg, tmp_path, monkeypatch):
+    cfg.save(tmp_path)
+    (tmp_path / "watcher-stop").touch()
+    (tmp_path / "worker-stop").touch()
+    started = []
+    stopped = []
+
+    class Child:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            assert (tmp_path / "worker-stop").exists()
+            stopped.append(True)
+
+    def spawn(*args):
+        assert not (tmp_path / "worker-stop").exists()
+        started.append(True)
+        return Child()
+
+    monkeypatch.setattr(watcher, "spawn", spawn)
+    monkeypatch.setattr(watcher, "telegram_running", lambda names: True)
+    monkeypatch.setattr(watcher, "maintenance_running", lambda root: False)
+    monkeypatch.setattr(watcher.signal, "signal", lambda *args: None)
+    # A new uninstall request must still stop the currently running watcher.
+    monkeypatch.setattr(
+        watcher.time, "sleep", lambda _: (tmp_path / "watcher-stop").touch()
+    )
+    watcher.watch(tmp_path)
+    assert started == [True]
+    assert stopped == [True]
+
+
+@pytest.mark.parametrize("stop_signal", [watcher.signal.SIGTERM, watcher.signal.SIGINT])
+def test_shutdown_signal_does_not_block_next_watcher_start(
+    stop_signal, cfg, tmp_path, monkeypatch
+):
+    cfg.save(tmp_path)
+    handlers = {}
+    started = []
+    stopped = []
+
+    class Child:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            assert (tmp_path / "worker-stop").exists()
+            stopped.append(True)
+
+    def register(signum, handler):
+        handlers[signum] = handler
+
+    monkeypatch.setattr(watcher.signal, "signal", register)
+    monkeypatch.setattr(watcher, "telegram_running", lambda names: True)
+    monkeypatch.setattr(watcher, "maintenance_running", lambda root: False)
+    monkeypatch.setattr(watcher, "spawn", lambda *args: started.append(True) or Child())
+    monkeypatch.setattr(
+        watcher.time, "sleep", lambda _: handlers[stop_signal](stop_signal, None)
+    )
+    watcher.watch(tmp_path)
+    assert not (tmp_path / "watcher-stop").exists()
+    watcher.watch(tmp_path)
+    assert started == [True, True]
+    assert stopped == [True, True]

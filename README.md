@@ -18,6 +18,18 @@ The current setup prompts and exported labels are in Russian; commands work as
 shown below.
 
 
+## Version 0.4.1: resume after PC shutdown
+
+Fixed a watcher exit on the next login after shutdown. SIGTERM previously left
+`watcher-stop` on disk, so the next watcher exited successfully and systemd's
+`Restart=on-failure` did not restart it. Signals now stop only the current
+process, and a new watcher clears the previous process's stop request.
+`uninstall` still stops the live watcher and removes its startup registration.
+
+Upgrade using the instructions below. For temporary recovery on 0.4.0, run
+`PYTHON -m tgstudy install`, then `PYTHON -m tgstudy sync`, using the installed
+runtime Python. The account session, archive and settings are retained.
+
 ## Version 0.4: an English/Russian study profile and durable media
 
 - Automatic language selection is limited to `en,ru` by default. Other language

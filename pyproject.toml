@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-study-logger"
-version = "0.4.0"
+version = "0.4.1"
 description = "Local automatic Telegram chat journal with voice and video transcription"
 requires-python = ">=3.11,<3.14"
 dependencies = [

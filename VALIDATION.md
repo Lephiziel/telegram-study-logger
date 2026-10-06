@@ -1,11 +1,11 @@
 # Validation — 2026-10-06
 
-Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.4.0.
+Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.4.1.
 The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.
 
 ## Passed
 
-- 106 fast pytest checks (five model inference tests skipped in the fast suite),
+- 109 fast pytest checks (five model inference tests skipped in the fast suite),
   including real Telethon message objects (voice/video note/video),
   durable SQLite jobs, deduplication, media replacement, caption edits, per-chat
   isolation, timestamps, JSONL/Markdown exports, history/event checkpoint ordering,
@@ -49,6 +49,16 @@ The same test suite also runs natively in the repository's three-OS GitHub Actio
 
 Speech fixture:
 https://github.com/openai/whisper/blob/main/tests/jfk.flac
+
+## Watcher shutdown recovery in 0.4.1
+
+Three new regression cases fail on 0.4.0 and pass after the fix. They simulate
+SIGTERM and SIGINT followed by a second watcher start, plus a stop file left by
+a previous process. They verify that Telegram's worker starts again, is stopped
+gracefully, and a fresh uninstall request still stops the live watcher.
+Signals, processes and sleep are mocked; these are lifecycle regression tests,
+not a physical power-cycle test on the user's PC. The fix retains
+`Restart=on-failure` and does not change the speech pipeline.
 
 ## Study profile and durable media in 0.4.0
 
