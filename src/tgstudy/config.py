@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,8 +64,13 @@ class Config:
     model: str = "small"
     language: str | None = None
     multilingual: bool = True
+    speech_languages: list[str] = field(default_factory=lambda: ["en", "ru"])
+    speech_chunk_seconds: int = 18
+    unclear_word_probability: float = 0.15
     cpu_threads: int = 2
-    transcribe_videos: bool = True
+    transcribe_videos: bool = False
+    media_cache_days: int = 7
+    media_cache_max_mb: int = 1024
     max_media_mb: int = 100
     poll_seconds: int = 60
     process_names: list[str] = field(
@@ -79,6 +85,37 @@ class Config:
     def validate(self) -> None:
         if not isinstance(self.multilingual, bool):
             raise ValueError("multilingual должен быть true или false")
+        if (
+            not isinstance(self.speech_languages, list)
+            or not self.speech_languages
+            or any(
+                not isinstance(s, str) or not re.fullmatch(r"[a-z]{2,3}", s)
+                for s in self.speech_languages
+            )
+            or len(set(self.speech_languages)) != len(self.speech_languages)
+        ):
+            raise ValueError(
+                "speech_languages: непустой список уникальных кодов языков"
+            )
+        if (
+            isinstance(self.speech_chunk_seconds, bool)
+            or not isinstance(self.speech_chunk_seconds, int)
+            or not 10 <= self.speech_chunk_seconds <= 20
+        ):
+            raise ValueError("speech_chunk_seconds должен быть от 10 до 20")
+        if (
+            isinstance(self.unclear_word_probability, bool)
+            or not isinstance(self.unclear_word_probability, (int, float))
+            or not 0 <= self.unclear_word_probability <= 1
+        ):
+            raise ValueError("unclear_word_probability должен быть от 0 до 1")
+        if not isinstance(self.transcribe_videos, bool):
+            raise ValueError("transcribe_videos должен быть true или false")
+        for value in [self.media_cache_days, self.media_cache_max_mb]:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    "Ограничения media_cache должны быть положительными целыми"
+                )
         if self.api_id <= 0 or len(self.api_hash) != 32:
             raise ValueError("Некорректные Telegram API credentials")
         if not self.chat_id or not self.own_id or not self.output_dir:

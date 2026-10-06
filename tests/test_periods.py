@@ -37,14 +37,14 @@ def test_dst_day_boundaries(date, hours):
     assert (end - start).total_seconds() == hours * 3600
 
 
-def test_modes_persist_initial_floor_for_offline_backfill(cfg, tmp_path):
+def test_modes_persist_initial_floor_for_offline_backfill(cfg, tmp_path, store):
     set_period(cfg, "daily", now=NOW)
     cfg.save(tmp_path)
     loaded = Config.load(tmp_path)
     assert loaded.export_mode == "daily"
     assert datetime.fromisoformat(loaded.history_since) == local_midnight("2026-10-05")
     # A restart tomorrow keeps the configured initial floor, not tomorrow's midnight.
-    worker = Worker(None, loaded, tmp_path, None)
+    worker = Worker(None, loaded, tmp_path, store)
     assert worker.since == datetime.fromisoformat(cfg.history_since)
     set_period(cfg, "history", 7, now=NOW)
     assert cfg.history_days == 7

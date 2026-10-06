@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,6 +12,13 @@ from telethon.errors import FloodWaitError
 from .capture import media_key, to_record
 from .config import Config, status_write
 from .exporter import export_dirty
+from .media_cache import (
+    MediaCache,
+    MediaTooLarge,
+    MediaUnavailable,
+    MessageUnavailable,
+    ProtectedContent,
+)
 from .store import Store
 from .transcribe import Transcriber
 
@@ -25,7 +31,7 @@ def telegram_client(cfg: Config, root: Path):
         cfg.api_id,
         cfg.api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.3.1",
+        app_version="0.4.0",
         flood_sleep_threshold=60,
         catch_up=True,
     )
@@ -40,6 +46,15 @@ class Worker:
         self.peer = None
         self.stop = asyncio.Event()
         self.transcriber = transcriber or Transcriber(cfg, root)
+        self.cache = MediaCache(root, cfg)
+        self.cache.prune(remove_partials=True)
+        self.media_queue = asyncio.Queue(maxsize=100)
+        self.queued_media = set()
+        self.observed_media = {}
+        self.media_locks = {}
+        self.active_media = set()
+        if not cfg.transcribe_videos:
+            store.exclude_videos(cfg.chat_id)
         self.last_sync = None
         self.current_job = None
         self.history_error = None
@@ -52,6 +67,66 @@ class Worker:
         if self.since and message.date and message.date < self.since:
             return
         self.store.upsert(await to_record(message, self.cfg))
+        job = self.store.get(self.cfg.chat_id, message.id)
+        key = (message.id, job["media_key"])
+        if (
+            job["transcription_state"] in {"pending", "retry"}
+            and job["kind"] in {"voice", "video_note", "video"}
+            and job["media_bytes"] <= self.cfg.max_media_mb * 1024 * 1024
+            and not getattr(message, "noforwards", False)
+            and self.cache.get(job) is None
+            and key not in self.queued_media
+            and not self.media_queue.full()
+        ):
+            self.queued_media.add(key)
+            self.observed_media[(job["chat_id"], *key)] = message
+            self.media_queue.put_nowait((job, message, key))
+
+    async def ensure_media(self, job, message=None):
+        key = (job["chat_id"], job["message_id"], job["media_key"])
+        guard = self.media_locks.setdefault(key, asyncio.Lock())
+        async with guard:
+            cached = self.cache.get(job)
+            if cached:
+                return cached
+            if message is None:
+                message = self.observed_media.get(key)
+            if message is None:
+                message = await self.client.get_messages(
+                    self.peer, ids=job["message_id"]
+                )
+            if not message:
+                raise MessageUnavailable()
+            if media_key(message) != job["media_key"]:
+                self.store.upsert(await to_record(message, self.cfg))
+                return None
+            if getattr(message, "noforwards", False):
+                raise ProtectedContent()
+            path = await asyncio.wait_for(
+                self.cache.download(self.client, message, job), timeout=600
+            )
+            self.cache.prune(protected=self.active_media | {path})
+            return path
+
+    async def media_loop(self):
+        """Download observed messages independently of slow ASR, using their live objects."""
+        while not self.stop.is_set():
+            job, message, key = await self.media_queue.get()
+            try:
+                current = self.store.get(job["chat_id"], job["message_id"])
+                if current and current["media_key"] == job["media_key"]:
+                    await self.ensure_media(job, message)
+            except Exception as exc:
+                log.warning(
+                    "Media prefetch failed for message %d: %s",
+                    job["message_id"],
+                    type(exc).__name__,
+                )
+                # The durable ASR job handles retries; prefetch does not consume attempts.
+            finally:
+                self.queued_media.discard(key)
+                self.observed_media.pop((job["chat_id"], *key), None)
+                self.media_queue.task_done()
 
     async def sync_history(self):
         cursor = self.store.cursor(self.cfg.chat_id)
@@ -118,47 +193,33 @@ class Worker:
 
     async def process_job(self, job: dict):
         mid = job["message_id"]
+        if job["kind"] not in {"voice", "video_note", "video"}:
+            return
+        if job["kind"] == "video" and not self.cfg.transcribe_videos:
+            self.store.exclude_videos(self.cfg.chat_id)
+            return
         if job["media_bytes"] > self.cfg.max_media_mb * 1024 * 1024:
             self.finish(job, state="error", error="media_exceeds_size_limit")
             return
         self.current_job = mid
+        path = None
         try:
-            message = await self.client.get_messages(self.peer, ids=mid)
-            if not message:
-                self.finish(job, state="error", error="message_no_longer_available")
+            path = await self.ensure_media(job)
+            if path is None or self.stop.is_set():
                 return
-            if media_key(message) != job["media_key"]:
-                # Existing jobs can predate the daily capture floor after a one-off export.
-                self.store.upsert(await to_record(message, self.cfg))
-                return
-            if getattr(message, "noforwards", False):
-                self.finish(job, state="error", error="protected_content")
-                return
-            media_root = self.root / "temporary-media"
-            media_root.mkdir(exist_ok=True, mode=0o700)
-            with tempfile.TemporaryDirectory(dir=media_root) as tmp:
-                downloaded = await asyncio.wait_for(
-                    self.client.download_media(
-                        message, file=str(Path(tmp) / "recording")
-                    ),
-                    timeout=600,
-                )
-                if not downloaded:
-                    raise RuntimeError("MissingMedia")
-                path = Path(downloaded)
-                if path.stat().st_size > self.cfg.max_media_mb * 1024 * 1024:
-                    self.finish(job, state="error", error="media_exceeds_size_limit")
-                    return
-                if self.stop.is_set():
-                    return
-                result = await asyncio.to_thread(self.transcriber.run, path)
-                self.finish(
-                    job,
-                    state="done" if result["text"] else "no_speech",
-                    transcript=result["text"],
-                    language=result["language"],
-                    segments=result["segments"],
-                )
+            self.active_media.add(path)
+            result = await asyncio.to_thread(self.transcriber.run, path)
+            self.finish(
+                job,
+                state="done" if result["text"] else "no_speech",
+                transcript=result["text"],
+                language=result["language"],
+                segments=result["segments"],
+            )
+        except ProtectedContent:
+            self.finish(job, state="error", error="protected_content")
+        except MediaTooLarge:
+            self.finish(job, state="error", error="media_exceeds_size_limit")
         except FloodWaitError as exc:
             self.finish(
                 job,
@@ -167,8 +228,19 @@ class Worker:
                 retry_seconds=exc.seconds + 1,
             )
         except Exception as exc:
-            err = type(exc).__name__
             final = job["attempts"] >= 5
+            if isinstance(exc, MediaUnavailable):
+                err = (
+                    (
+                        "message_no_longer_available"
+                        if isinstance(exc, MessageUnavailable)
+                        else "media_unavailable"
+                    )
+                    if final
+                    else "media_unavailable_retry"
+                )
+            else:
+                err = type(exc).__name__
             self.finish(
                 job,
                 state="error" if final else "retry",
@@ -177,6 +249,8 @@ class Worker:
             )
             log.warning("Transcription failed for message %d: %s", mid, err)
         finally:
+            if path is not None:
+                self.active_media.discard(path)
             self.current_job = None
 
     async def transcription_loop(self):
@@ -239,6 +313,7 @@ class Worker:
             for coro in (
                 self.history_loop(),
                 self.transcription_loop(),
+                self.media_loop(),
                 self.export_loop(),
                 self.stop_monitor(stop_file),
                 self.client.run_until_disconnected(),

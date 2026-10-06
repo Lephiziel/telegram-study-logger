@@ -103,7 +103,7 @@ async def test_interrupted_history_resumes_from_persisted_cursor(cfg, tmp_path, 
     assert store.get(20, 4) is not None and store.cursor(20) == 4
 
 
-async def test_transcription_pipeline_cleans_temporary_media(store, cfg, tmp_path):
+async def test_transcription_pipeline_commits_persistent_media(store, cfg, tmp_path):
     m = message(1, kind="video_note")
     worker = Worker(Client([m]), cfg, tmp_path, store, Recognizer())
     await worker.ingest(m)
@@ -111,14 +111,23 @@ async def test_transcription_pipeline_cleans_temporary_media(store, cfg, tmp_pat
     r = store.get(20, 1)
     assert r["transcription_state"] == "done"
     assert r["transcript"] == "Hello, how have you been?"
-    assert list((tmp_path / "temporary-media").iterdir()) == []
+    assert worker.cache.get(r).read_bytes() == b"test media"
+    assert list((tmp_path / "media-cache").rglob("*.part*")) == []
 
 
-async def test_missing_message_is_explicit_error(store, cfg, tmp_path):
+async def test_missing_message_is_retried_before_final_error(store, cfg, tmp_path):
     worker = Worker(Client([]), cfg, tmp_path, store, Recognizer())
-    await worker.ingest(message(1, kind="voice"))
+    from tgstudy.capture import to_record
+
+    store.upsert(await to_record(message(1, kind="voice"), cfg))
     await worker.process_job(store.next_job(20))
+    assert store.get(20, 1)["error"] == "media_unavailable_retry"
+    assert store.get(20, 1)["transcription_state"] == "retry"
+    job = store.get(20, 1)
+    job["attempts"] = 5
+    await worker.process_job(job)
     assert store.get(20, 1)["error"] == "message_no_longer_available"
+    assert store.get(20, 1)["transcription_state"] == "error"
 
 
 async def test_size_limit_before_download(store, cfg, tmp_path):

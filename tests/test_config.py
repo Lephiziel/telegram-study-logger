@@ -24,3 +24,23 @@ def test_saved_timezone_is_preserved(cfg, tmp_path, monkeypatch):
     cfg.save(tmp_path)
     monkeypatch.setattr(config, "get_localzone_name", lambda: "Europe/Berlin")
     assert config.Config.load(tmp_path).timezone == "America/New_York"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("speech_languages", []),
+        ("speech_languages", ["en", "en"]),
+        ("speech_languages", [1]),
+        ("speech_languages", "en,ru"),
+        ("speech_chunk_seconds", 30),
+        ("speech_chunk_seconds", True),
+        ("media_cache_days", 0),
+        ("media_cache_max_mb", True),
+        ("unclear_word_probability", 1.5),
+    ],
+)
+def test_invalid_speech_and_cache_configuration_rejected(cfg, field, value):
+    setattr(cfg, field, value)
+    with pytest.raises(ValueError):
+        cfg.validate()

@@ -4,11 +4,14 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from telethon import utils
+from telethon.tl.types import MessageMediaWebPage
 
 from .config import Config
 
 
-def kind_of(message, videos: bool = True) -> str:
+def kind_of(message, videos: bool = False) -> str:
+    if isinstance(message.media, MessageMediaWebPage):
+        return "link"  # A YouTube/Reels preview can expose message.video/document.
     if message.voice:
         return "voice"
     if message.video_note:
@@ -29,6 +32,8 @@ def kind_of(message, videos: bool = True) -> str:
 
 
 def media_key(message) -> str | None:
+    if isinstance(message.media, MessageMediaWebPage):
+        return None
     doc = message.document
     return str(doc.id) if doc else None
 

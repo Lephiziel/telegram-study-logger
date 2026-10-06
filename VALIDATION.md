@@ -1,11 +1,11 @@
-# Validation — 2026-10-05
+# Validation — 2026-10-06
 
-Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.3.1.
+Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.4.0.
 The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.
 
 ## Passed
 
-- 75 fast pytest checks (four model inference tests skipped in the fast suite),
+- 106 fast pytest checks (five model inference tests skipped in the fast suite),
   including real Telethon message objects (voice/video note/video),
   durable SQLite jobs, deduplication, media replacement, caption edits, per-chat
   isolation, timestamps, JSONL/Markdown exports, history/event checkpoint ordering,
@@ -50,7 +50,40 @@ The same test suite also runs natively in the repository's three-OS GitHub Actio
 Speech fixture:
 https://github.com/openai/whisper/blob/main/tests/jfk.flac
 
-## Bilingual regression in 0.3.1
+## Study profile and durable media in 0.4.0
+
+- Language votes are ranked only within the configured expected languages. Tests
+  reproduce Portuguese/Romanian votes that outrank English/Russian, and verify
+  they cannot select a third decoder language. Unexpected votes and forbidden
+  scripts trigger one stricter retry; unresolved/low-confidence words are marked
+  `[unclear]` with their raw hypotheses and probabilities retained in JSONL.
+- A contract test preserves the recognizer's exact grammar errors, profanity,
+  fillers, and repetitions. This verifies absence of a rewriting stage; it does
+  **not** prove Whisper itself never normalizes natural speech.
+- Bounded recognition chunks cover a 72-second timeline with and without pauses.
+  Adjacent chunks preserve offsets and have no missing core intervals.
+- All four real OGG/MP4 inference tests passed on the new speech profile locally.
+  A fifth real test passed on a recording longer than 60 seconds, with long
+  English → Russian → English regions: all five occurrences of "test voice
+  message" survived, the Russian middle remained Cyrillic, and the final English
+  sentence followed it. Instrumentation verified every ASR clip was at most
+  19 seconds including context. These fixtures use synthetic speech and disable
+  confidence masking to measure ASR coverage; masking has separate contract tests.
+- A real Telethon webpage preview exposes `message.video` but is exported as a
+  link, without a media job, even when attached-video ASR is enabled. Disabling
+  videos removes their previous ASR results without changing captions or voices.
+- Tests prefetch a voice, remove its Telegram metadata, restart the worker, and
+  recognize the cached bytes. Failed ASR also resumes from cache without Telegram.
+  Concurrent prefetch/ASR downloads once, partial downloads are discarded, edited
+  media and different chats cannot share a cache identity, and expiry/size pruning
+  protects active files. Telegram downloads still use a test client, not a live account.
+- Selective reprocessing tests keep good transcripts and queue only unexpected
+  language metadata or a requested message ID.
+- The supplied Markdown export confirmed the reported symptoms. Its original
+  voice/video files were not available, so exact results for those recordings
+  have not been measured. No private export or original audio is in the repository.
+
+## Historical bilingual regression in 0.3.1
 
 The old 30-second-window decoder reproduced a lost language portion on synthesized
 English/Russian speech: an English-first sample retained only English; a

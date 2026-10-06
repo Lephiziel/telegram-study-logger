@@ -78,3 +78,45 @@ async def test_cli_retranscribe_queues_completed_voice(cfg, tmp_path, monkeypatc
     assert db.get(cfg.chat_id, 1)["transcription_state"] == "pending"
     assert db.get(cfg.chat_id, 1)["transcript"] is None
     db.close()
+
+
+async def test_selective_language_repair_keeps_good_transcripts(
+    cfg, store, tmp_path, monkeypatch
+):
+    cfg.save(tmp_path)
+    for mid in [1, 2, 3]:
+        store.upsert(await to_record(message(mid, kind="voice"), cfg))
+    store.result(20, 1, state="done", transcript="Hello", language="en")
+    store.result(20, 2, state="done", transcript="Foreign", language="pt")
+    store.result(
+        20,
+        3,
+        state="done",
+        transcript="Mixed",
+        language="en",
+        segments=[{"language": "ro"}],
+    )
+    monkeypatch.setenv("TGSTUDY_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        sys, "argv", ["tgstudy", "retranscribe", "--unexpected-languages"]
+    )
+    cli.main()
+    assert store.get(20, 1)["transcript"] == "Hello"
+    assert [store.get(20, i)["transcription_state"] for i in [2, 3]] == [
+        "pending",
+        "pending",
+    ]
+
+
+async def test_retranscribe_one_message_does_not_clear_other_results(
+    cfg, store, tmp_path, monkeypatch
+):
+    cfg.save(tmp_path)
+    for mid in [1, 2]:
+        store.upsert(await to_record(message(mid, kind="voice"), cfg))
+        store.result(20, mid, state="done", transcript="Hello", language="en")
+    monkeypatch.setenv("TGSTUDY_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["tgstudy", "retranscribe", "--message-id", "2"])
+    cli.main()
+    assert store.get(20, 1)["transcript"] == "Hello"
+    assert store.get(20, 2)["transcription_state"] == "pending"

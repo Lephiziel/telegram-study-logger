@@ -24,4 +24,5 @@ htmlcov/
 worker-stop
 watcher-stop
 temporary-media/
+media-cache/
 .speech-test-cache/

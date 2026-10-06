@@ -85,6 +85,8 @@ async def test_real_mixed_speech_keeps_both_languages_in_exports(
     speech_models, cfg, store, tmp_path, order, kind, extension, codec
 ):
     model, samples = speech_models
+    # This fixture checks speech coverage; uncertainty marking is tested separately.
+    cfg.unclear_word_probability = 0
     audio = np.concatenate(
         [samples[order[0]], np.zeros(2400, np.float32), samples[order[1]]]
     )
@@ -149,4 +151,48 @@ async def test_real_mixed_speech_keeps_both_languages_in_exports(
         assert row["transcript"] in (folder / ("2026-10-05" + extension)).read_text(
             encoding="utf-8"
         )
-    assert list((tmp_path / "temporary-media").iterdir()) == []
+    assert worker.cache.get(row).is_file()
+    assert list((tmp_path / "media-cache").rglob("*.part*")) == []
+
+
+def test_real_long_english_russian_english_keeps_beginning_middle_and_end(
+    speech_models, cfg, tmp_path, monkeypatch
+):
+    model, samples = speech_models
+    cfg.unclear_word_probability = 0
+    order = [0, 0, 0, 1, 1, 0, 0]
+    pieces = []
+    for i in order:
+        pieces.extend([samples[i], np.zeros(4800, np.float32)])
+    audio = np.concatenate(pieces)
+    path = tmp_path / "long-mixed.wav"
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes((audio * 32767).astype(np.int16).tobytes())
+    original = model.transcribe
+    durations = []
+
+    def observed(audio, **kwargs):
+        durations.append(len(audio) / 16000)
+        return original(audio, **kwargs)
+
+    monkeypatch.setattr(model, "transcribe", observed)
+    transcriber = Transcriber(cfg, tmp_path)
+    transcriber.model = model
+    result = transcriber.run(path)
+    languages = [s["language"] for s in result["segments"]]
+    changes = [
+        language
+        for i, language in enumerate(languages)
+        if not i or language != languages[i - 1]
+    ]
+    assert changes == ["en", "ru", "en"]
+    assert len(audio) / 16000 > 60
+    assert max(durations) <= cfg.speech_chunk_seconds + 1
+    text = result["text"].lower()
+    assert text.startswith("hello")
+    assert "говорить по-русски" in text and "обе части сообщения" in text
+    assert text.rfind("beginning is saved") > text.rfind("расшифровке")
+    assert text.count("test voice message") == 5

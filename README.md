@@ -3,7 +3,7 @@
 [![Cross-platform checks](https://github.com/Lephiziel/telegram-study-logger/actions/workflows/tests.yml/badge.svg)](https://github.com/Lephiziel/telegram-study-logger/actions/workflows/tests.yml)
 
 Automatically export one Telegram chat to readable Markdown and JSONL, with local
-transcription of voice messages, video notes, and ordinary videos. Useful for
+transcription of voice messages and video notes (ordinary videos are opt-in). Useful for
 reviewing conversations while learning a language.
 
 **[Подробная инструкция на русском → README_RU.md](README_RU.md)**
@@ -17,6 +17,49 @@ loaded inside Telegram Desktop or a signed Windows/macOS application.
 The current setup prompts and exported labels are in Russian; commands work as
 shown below.
 
+
+## Version 0.4: an English/Russian study profile and durable media
+
+- Automatic language selection is limited to `en,ru` by default. Other language
+  votes cannot choose a Portuguese/Romanian/etc. decoder. Use `speech auto
+  --languages en,ru` to set the expected language list explicitly.
+- After language regions are identified, long regions are split at VAD pauses
+  into chunks up to 18 seconds (configurable from 10 to 20). Without a suitable
+  pause the hard boundary uses overlapping context and timestamp joining.
+- Unexpected language votes, output language metadata, or non-Latin/non-Cyrillic
+  letters trigger one retry with stricter context. Low-confidence words become
+  `[unclear]`; JSONL segments retain `raw_text`, `uncertain_words`, and retry
+  information. Confidence is a model estimate, not a calibrated error probability.
+- Recognition uses `task=transcribe`, zero temperature, and a verbatim-style
+  prompt. There is no grammar correction, translation, or rewriting stage.
+  **Whisper itself can still normalize mistakes, omit fillers, or produce wrong
+  words. The prompt cannot guarantee perfect verbatim speech.** Script checks
+  also cannot identify every foreign phrase written with Latin letters.
+- Only `voice` and `video_note` are transcribed by default. All webpage previews,
+  including YouTube/Reels previews exposing a video, stay links without ASR.
+  `videos off` also removes old ordinary-video transcripts from rebuilt exports,
+  retaining message text and links. Existing saved video settings are preserved
+  until this command is run; `videos on` explicitly enables attached videos.
+- A separate queue downloads observed messages while ASR is busy. Complete media
+  is stored atomically in `media-cache/<chat-id>/<message-id>-<media-identity>.media`.
+  Recognition and retries can use it after a restart without refetching Telegram
+  metadata. Default retention is 7 days since last use and a 1 GB size budget.
+  Active files are protected from eviction; the budget may temporarily exceed
+  its limit for active media. Missing messages are retried before a final error.
+  A recording removed before its first successful download cannot be recovered.
+
+Upgrade with the instructions below, then run:
+
+```bash
+"$TGSTUDY_PY" -m tgstudy speech auto --languages en,ru
+"$TGSTUDY_PY" -m tgstudy videos off
+"$TGSTUDY_PY" -m tgstudy retranscribe --unexpected-languages
+```
+
+The last command repairs stored recordings whose language metadata contains an
+unexpected language, retaining good transcripts. It cannot identify older foreign
+phrases that were stored without language metadata. Use `retranscribe --message-id
+12345` for one selected-chat recording, or `--days 2` for yesterday and today.
 
 ## Version 0.3.1: keep both parts of a bilingual recording
 
@@ -68,7 +111,8 @@ TGSTUDY_PY="$HOME/.local/share/telegram-study-logger/runtime/bin/python"
 "$TGSTUDY_PY" -m tgstudy uninstall
 # Wait for the watcher/worker to stop (up to a minute), then continue.
 "$TGSTUDY_PY" -m pip install --upgrade 'git+https://github.com/Lephiziel/telegram-study-logger.git'
-"$TGSTUDY_PY" -m tgstudy speech auto
+"$TGSTUDY_PY" -m tgstudy speech auto --languages en,ru
+"$TGSTUDY_PY" -m tgstudy videos off
 "$TGSTUDY_PY" -m tgstudy install
 "$TGSTUDY_PY" -m tgstudy sync
 "$TGSTUDY_PY" -m tgstudy retranscribe --today
@@ -265,9 +309,10 @@ share this directory: `account.session` grants access to your Telegram account.
 The repository includes no account credentials or chat history.
 
 Messages are not sent to a bot or transcription service. Model files are initially
-downloaded from Hugging Face. Voice/video files are downloaded temporarily and
-deleted after processing; the exported transcript remains. Original media is not
-archived. The logger does not send messages or invoke mark-as-read methods.
+downloaded from Hugging Face. Downloaded recordings remain in a private local
+media cache for 7 days since last use, bounded to 1 GB by default; the exported
+transcript remains after eviction. Set `media_cache_days` / `media_cache_max_mb`
+to change these limits. The logger does not send messages or invoke mark-as-read methods.
 There is no extra encryption at rest; protect your computer and export folder.
 
 ## Limits and troubleshooting
@@ -307,7 +352,8 @@ deduplication, durable transcription jobs, media decoding, exports, day boundari
 DST, mode changes, and startup generation. The CI matrix runs Python 3.12 on
 Ubuntu, Windows, and macOS. Tests do not require Telegram credentials or download
 a Whisper model by default. The four real speech tests are skipped in the fast
-suite and run in a separate Linux CI job. Run them locally with:
+suite and run in a separate Linux CI job, alongside a long English → Russian →
+English regression. Run them locally with:
 
 ```bash
 .venv/bin/python -m pip install '.[test,speech-test]'

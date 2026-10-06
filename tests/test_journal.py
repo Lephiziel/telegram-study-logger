@@ -81,6 +81,7 @@ async def test_jobs_survive_restart_and_retries_are_deferred(tmp_path, cfg):
 
 @pytest.mark.parametrize("kind", ["voice", "video_note", "video"])
 async def test_media_kinds(kind, cfg):
+    cfg.transcribe_videos = True  # Ordinary video is an explicit opt-in.
     r = await to_record(message(1, kind=kind), cfg)
     assert r["kind"] == kind
     assert r["transcription_state"] == "pending"

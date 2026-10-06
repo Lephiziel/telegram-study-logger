@@ -262,6 +262,9 @@ def test_overlapping_context_is_joined_once_with_original_timestamps(
 
             return lazy(), SimpleNamespace(language=kwargs["language"])
 
+        def detect_language(self, **kwargs):
+            return "en", 0.9, []
+
     transcriber = Transcriber(cfg, tmp_path)
     transcriber.model = Model()
     result = transcriber.run(tmp_path / "speech.ogg")
@@ -306,6 +309,9 @@ def test_pause_boundary_does_not_include_previous_language_context(
                     )
                 ]
             ), SimpleNamespace(language=kwargs["language"])
+
+        def detect_language(self, **kwargs):
+            return "en", 0.9, []
 
     transcriber = Transcriber(cfg, tmp_path)
     transcriber.model = Model()

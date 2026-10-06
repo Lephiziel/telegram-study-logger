@@ -77,7 +77,7 @@ async def setup(root: Path):
         api_id,
         api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.3.1",
+        app_version="0.4.0",
     )
     try:
         # This is the only place allowed to prompt for account authorization.
@@ -243,12 +243,23 @@ def main():
     speech = sub.add_parser("speech", help="Языки распознавания без повторного входа")
     speech.add_argument("language", help="auto для смеси языков; en/ru для одного")
     speech.add_argument("--model", help="small/medium/large-v3 или локальная модель")
+    speech.add_argument("--languages", help="Разрешённые языки auto, например en,ru")
+    videos = sub.add_parser(
+        "videos", help="Распознавать обычные видео (ссылки всегда исключены)"
+    )
+    videos.add_argument("policy", choices=["off", "on"])
     retranscribe = sub.add_parser(
         "retranscribe", help="Заново распознать сохранённые записи"
     )
     scope = retranscribe.add_mutually_exclusive_group(required=True)
     scope.add_argument("--days", type=int, help="N дней, включая сегодня; 0 = всё")
     scope.add_argument("--today", action="store_true")
+    scope.add_argument(
+        "--unexpected-languages",
+        action="store_true",
+        help="Только сохранённые записи с неожиданным языком в метаданных",
+    )
+    scope.add_argument("--message-id", type=int, help="Одна запись выбранного чата")
     args = parser.parse_args()
     root = data_dir()
     configure_logging(root)
@@ -307,6 +318,12 @@ def main():
                 print(
                     f"Распознавание: {'auto/multilingual' if cfg.multilingual else cfg.language or 'auto/single'}; модель: {cfg.model}"
                 )
+                print(
+                    f"Языки auto: {', '.join(cfg.speech_languages)}; фрагменты: {cfg.speech_chunk_seconds} сек."
+                )
+                print(
+                    f"Обычные видео: {'on' if cfg.transcribe_videos else 'off'}; кэш: {cfg.media_cache_days} дней / {cfg.media_cache_max_mb} MB"
+                )
         elif args.cmd == "sync":
             cfg = Config.load(root)
             print("Догрузка сообщений из Telegram…", flush=True)
@@ -321,6 +338,10 @@ def main():
             cfg.language = None if cfg.multilingual else args.language
             if args.model:
                 cfg.model = args.model
+            if args.languages:
+                if not cfg.multilingual:
+                    parser.error("--languages применяется только к speech auto")
+                cfg.speech_languages = [s.strip() for s in args.languages.split(",")]
             if cfg.multilingual and cfg.model in {
                 "tiny.en",
                 "base.en",
@@ -333,14 +354,44 @@ def main():
             print(
                 "Настройки распознавания сохранены. Для старых расшифровок используй retranscribe."
             )
+        elif args.cmd == "videos":
+            cfg = Config.load(root)
+            cfg.transcribe_videos = args.policy == "on"
+            with maintenance(root):
+                cfg.save(root)
+                store = Store(root / "journal.sqlite3")
+                try:
+                    count = (
+                        store.exclude_videos(cfg.chat_id)
+                        if not cfg.transcribe_videos
+                        else 0
+                    )
+                    export_dirty(store, cfg)
+                finally:
+                    store.close()
+            print(
+                f"Обычные видео: {args.policy}. Старых ASR-результатов исключено: {count}."
+            )
         elif args.cmd == "retranscribe":
             cfg = Config.load(root)
-            days = 1 if args.today else args.days
+            if args.message_id is not None and args.message_id <= 0:
+                parser.error("--message-id должен быть положительным")
+            days = 1 if args.today else args.days or 0
             _, _, start, end = day_window(cfg.timezone, days)
             with maintenance(root):
                 store = Store(root / "journal.sqlite3")
                 try:
-                    count = store.retranscribe(cfg.chat_id, start, end)
+                    if not cfg.transcribe_videos:
+                        store.exclude_videos(cfg.chat_id)
+                    count = store.retranscribe(
+                        cfg.chat_id,
+                        start,
+                        end,
+                        unexpected_languages=cfg.speech_languages
+                        if args.unexpected_languages
+                        else None,
+                        message_id=args.message_id,
+                    )
                     export_dirty(store, cfg)
                 finally:
                     store.close()

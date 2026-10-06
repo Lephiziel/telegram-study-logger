@@ -201,9 +201,31 @@ class Store:
                 (chat,),
             )
 
-    def retranscribe(self, chat: int, start, end) -> int:
+    def exclude_videos(self, chat: int) -> int:
+        """Remove old video ASR from rebuilt exports when video capture is disabled."""
+        rows = self.db.execute(
+            """SELECT message_id,day FROM messages WHERE chat_id=?
+            AND kind IN ('video','video_ignored') AND
+            (kind='video' OR transcription_state!='not_applicable' OR transcript IS NOT NULL)""",
+            (chat,),
+        ).fetchall()
+        with self.db:
+            for row in rows:
+                self.db.execute(
+                    """UPDATE messages SET kind='video_ignored',
+                    transcription_state='not_applicable', transcript=NULL,
+                    transcript_language=NULL,segments=NULL,error=NULL,attempts=0,retry_at=0
+                    WHERE chat_id=? AND message_id=?""",
+                    (chat, row["message_id"]),
+                )
+                self._dirty(chat, row["day"])
+        return len(rows)
+
+    def retranscribe(
+        self, chat: int, start, end, *, unexpected_languages=None, message_id=None
+    ) -> int:
         query = (
-            "SELECT message_id, day FROM messages WHERE chat_id=? "
+            "SELECT message_id, day, transcript_language, segments FROM messages WHERE chat_id=? "
             "AND media_key IS NOT NULL AND transcription_state!='not_applicable' "
             "AND date_utc<?"
         )
@@ -211,7 +233,23 @@ class Store:
         if start is not None:
             query += " AND date_utc>=?"
             params.append(start.isoformat())
+        if message_id is not None:
+            query += " AND message_id=?"
+            params.append(message_id)
         rows = self.db.execute(query, params).fetchall()
+        if unexpected_languages is not None:
+            rows = [
+                row
+                for row in rows
+                if (
+                    row["transcript_language"]
+                    and row["transcript_language"] not in unexpected_languages
+                )
+                or any(
+                    s.get("language") and s["language"] not in unexpected_languages
+                    for s in json.loads(row["segments"] or "[]")
+                )
+            ]
         with self.db:
             for row in rows:
                 self.db.execute(
