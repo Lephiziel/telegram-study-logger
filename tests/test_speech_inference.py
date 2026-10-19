@@ -220,6 +220,9 @@ def test_real_long_english_russian_english_keeps_beginning_middle_and_end(
     transcriber = Transcriber(cfg, tmp_path)
     transcriber.model = model
     result = transcriber.run(path)
+    (tmp_path / "transcription-result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     languages = [s["language"] for s in result["segments"]]
     changes = [
         language
@@ -233,4 +236,4 @@ def test_real_long_english_russian_english_keeps_beginning_middle_and_end(
     assert text.startswith("hello")
     assert "говорить по-русски" in text and "обе части сообщения" in text
     assert text.rfind("beginning is saved") > text.rfind("расшифровке")
-    assert text.count("test voice message") == 5
+    assert text.count("test voice message") == 5, result["text"]

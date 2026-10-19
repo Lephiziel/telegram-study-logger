@@ -255,6 +255,59 @@ def test_silent_recording_does_not_invent_a_transcript(cfg, tmp_path, monkeypatc
     }
 
 
+@pytest.mark.parametrize("trailing_silence", [False, True])
+def test_missing_spoken_tail_is_recovered_without_duplicating_prefix(
+    cfg, tmp_path, monkeypatch, trailing_silence
+):
+    audio = np.arange(17 * SAMPLE_RATE, dtype=np.float32)
+    monkeypatch.setattr(speech_module, "decode_audio", lambda *a, **kw: audio)
+    intervals = [{"start": 0, "end": int(7.8 * SAMPLE_RATE)}]
+    if not trailing_silence:
+        intervals.append(
+            {"start": int(8.4 * SAMPLE_RATE), "end": int(16.7 * SAMPLE_RATE)}
+        )
+    monkeypatch.setattr(
+        speech_module, "get_speech_timestamps", lambda *a, **kw: intervals
+    )
+    monkeypatch.setattr(
+        speech_module,
+        "language_regions",
+        lambda *a: [{"start": 0, "end": len(audio), "language": "en"}],
+    )
+    calls = []
+
+    class Model:
+        def detect_language(self, audio):
+            return "en", 0.9, []
+
+        def transcribe(self, audio, **kwargs):
+            calls.append(len(audio))
+            # A long decode silently collapses the second spoken repetition.
+            return iter(
+                [
+                    SimpleNamespace(
+                        words=[
+                            word(
+                                " Repeat phrase.",
+                                0,
+                                min(7.7, len(audio) / SAMPLE_RATE - 0.3),
+                            )
+                        ],
+                        avg_logprob=-0.1,
+                        no_speech_prob=0,
+                    )
+                ]
+            ), SimpleNamespace(language="en")
+
+    transcriber = Transcriber(cfg, tmp_path)
+    transcriber.model = Model()
+    result = transcriber.run(tmp_path / "repetition.wav")
+    assert result["text"].count("Repeat phrase.") == (1 if trailing_silence else 2)
+    assert len(calls) == (1 if trailing_silence else 3)
+    if not trailing_silence:
+        assert result["segments"][0]["end"] <= result["segments"][1]["start"]
+
+
 def test_overlapping_context_is_joined_once_with_original_timestamps(
     cfg, tmp_path, monkeypatch, speech_input
 ):

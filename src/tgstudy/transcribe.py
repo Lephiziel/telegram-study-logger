@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -219,7 +220,9 @@ class Transcriber:
         pause_boundaries = {
             (a["end"] + b["start"]) // 2 for a, b in zip(speech, speech[1:])
         }
-        for region in chunks:
+        pending = deque((chunk, 0) for chunk in chunks)
+        while pending:
+            region, coverage_depth = pending.popleft()
             # At a real pause the other language's context can distort alignment
             # of the first word (e.g. "Hello"). Only overlap unpaused boundaries.
             clip_start = (
@@ -277,6 +280,46 @@ class Transcriber:
                 )
                 if not suspicious:
                     break
+            # Whisper can silently collapse repeated utterances in a long
+            # clip, returning timestamps for only its first half. VAD tells
+            # us whether the untranscribed tail still contains actual speech.
+            # Re-decode smaller partitions, discarding the original hypothesis
+            # so the recovered prefix is never included twice.
+            if (
+                coverage_depth < 2
+                and region["end"] - region["start"] >= 10 * SAMPLE_RATE
+            ):
+                decoded_end = max(
+                    (
+                        clip_start + w.end * SAMPLE_RATE
+                        for s in segments
+                        for w in (s.words or [])
+                    ),
+                    default=clip_start,
+                )
+                spoken_tail = sum(
+                    max(
+                        0,
+                        min(s["end"], region["end"])
+                        - max(s["start"], decoded_end, region["start"]),
+                    )
+                    for s in speech
+                )
+                if spoken_tail >= SAMPLE_RATE:
+                    lo, hi = (
+                        region["start"] + 3 * SAMPLE_RATE,
+                        region["end"] - 3 * SAMPLE_RATE,
+                    )
+                    target = decoded_end if lo <= decoded_end <= hi else (lo + hi) // 2
+                    candidates = [p for p in pause_boundaries if lo <= p <= hi]
+                    split = (
+                        min(candidates, key=lambda p: abs(p - target))
+                        if candidates
+                        else int(target)
+                    )
+                    pending.appendleft(({**region, "start": split}, coverage_depth + 1))
+                    pending.appendleft(({**region, "end": split}, coverage_depth + 1))
+                    continue
             for s in segments:  # Consume lazy inference before decoding the next clip.
                 words = [
                     w
@@ -313,6 +356,7 @@ class Transcriber:
                         "raw_text": "".join(w.word for w in words).strip(),
                         "language": region["language"],
                         "retried": attempt > 0,
+                        "coverage_retried": coverage_depth > 0,
                         "unexpected_language_vote": detected
                         if detected not in self.cfg.speech_languages
                         else None,

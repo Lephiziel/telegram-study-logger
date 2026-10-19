@@ -20,6 +20,11 @@ shown below.
 
 ## Version 0.5.0: multiple chats and a private practice channel
 
+Speech boundary refinement also covers delayed language changes without cutting
+off the introduction. If a long decode silently omits a spoken tail, VAD coverage
+triggers a bounded retry on smaller partitions; silence alone does not. Recovered
+segments carry `coverage_retried` in JSONL. Verbatim accuracy is still not guaranteed.
+
 Keep logging your conversation and add a separate channel for your own practice.
 Upgrade the installed package using the instructions below, then run:
 
