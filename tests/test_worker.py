@@ -14,6 +14,9 @@ class Client:
         self.messages = messages
         self.kwargs = None
 
+    async def get_input_entity(self, chat):
+        return chat
+
     async def iter_messages(self, peer, **kwargs):
         self.kwargs = kwargs
         messages = self.messages

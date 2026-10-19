@@ -186,6 +186,7 @@ def export_dirty(store: Store, cfg: Config, *, now=None) -> int:
                 "chat_id": cfg.chat_id,
                 "title": cfg.chat_title,
                 "own_id": cfg.own_id,
+                "own_posts": cfg.own_posts,
                 "timezone": cfg.timezone,
                 "schema_version": 1,
                 "transcription_source": "local_whisper",

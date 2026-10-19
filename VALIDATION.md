@@ -1,4 +1,28 @@
-# Validation — 2026-10-06
+# Validation
+
+## Version 0.5.0 — 2026-10-19
+
+- Linux: 121 fast tests passed; the five opt-in real-model inference tests were
+  skipped. The ASR engine is unchanged in this release.
+- Added coverage for legacy configuration, independent per-chat import floors and
+  persisted cursors, reconnect/deduplication after reloading the configuration,
+  and separate Markdown/JSONL exports with overlapping message IDs.
+- Exercised live message routing, an ignored unselected chat, voice/video-note
+  processing with the same message ID in two chats, media cache isolation, caption
+  edits retaining transcripts, and explicit authorship for personal channel posts.
+- Tested adding a channel using an existing authenticated session, rejecting a
+  duplicate, safe chat removal/promotion while retaining archives, and requiring
+  a chat ID before reprocessing a particular message in a multi-chat setup.
+- Ran the background multi-chat lifecycle with both chats available and with one
+  channel unavailable; the remaining chat synchronized, status included both
+  chats, and stop/disconnect completed cleanly.
+- Built the 0.5.0 wheel. Tests use fake Telegram connections and an ASR stub; an
+  actual private channel and the user's local installation were not accessed.
+- Windows/macOS validation is delegated to the existing GitHub Actions matrix;
+  check the run for this commit for its result. The historical real-ASR fixture
+  failures described below are not claimed fixed by the multi-chat release.
+
+## Version 0.4.1 — 2026-10-06
 
 Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.4.1.
 The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.

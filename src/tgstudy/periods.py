@@ -43,6 +43,8 @@ def set_period(
     )
     # Persist this initial floor so an offline day is backfilled on the next start.
     cfg.history_since = start.isoformat() if start else None
+    for chat in cfg.extra_chats:
+        chat.history_since = cfg.history_since
     cfg.validate()
 
 
