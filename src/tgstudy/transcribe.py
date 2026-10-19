@@ -85,8 +85,10 @@ def language_regions(
         nearby = [
             (p, left, right)
             for p, left, right in pauses
-            if abs(p - boundary) <= 1.5 * SAMPLE_RATE
-            and regions[i - 1]["start"] < p < upper
+            # A mixed-language probe can lag by more than the two-second
+            # step. Search its full context, including the pause BEFORE a
+            # short greeting, then rank pauses by language on both sides.
+            if abs(p - boundary) <= context and regions[i - 1]["start"] < p < upper
         ]
         if nearby:
             old_language = regions[i - 1]["language"]

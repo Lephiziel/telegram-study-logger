@@ -191,6 +191,34 @@ def test_next_sentence_pause_cannot_cut_off_new_language_intro():
     ]
 
 
+@pytest.mark.parametrize("languages", [("ru", "en"), ("en", "ru")])
+def test_delayed_language_vote_cannot_choose_pause_after_intro(languages):
+    audio = np.arange(18 * SAMPLE_RATE, dtype=np.float32)
+    boundary = int(9.4 * SAMPLE_RATE)
+
+    class Model:
+        def detect_language(self, audio):
+            # Mixed four-second probes can keep voting for the old language
+            # after the actual switch. Pure two-second speech is unambiguous.
+            threshold = boundary + (
+                1.8 * SAMPLE_RATE if len(audio) > 2 * SAMPLE_RATE else 0
+            )
+            language = languages[0] if np.mean(audio) < threshold else languages[1]
+            return language, 0.9, [(language, 0.9)]
+
+    speech = [
+        {"start": 0, "end": boundary - 800},
+        {"start": boundary + 800, "end": int(10.5 * SAMPLE_RATE)},
+        {"start": int(10.7 * SAMPLE_RATE), "end": len(audio)},
+    ]
+    # Coarse detection switches at 12 seconds, 2.6 seconds after the actual
+    # pause. A 1.5-second search can only see the pause AFTER the greeting.
+    assert language_regions(Model(), audio, speech) == [
+        {"start": 0, "end": boundary, "language": languages[0]},
+        {"start": boundary, "end": len(audio), "language": languages[1]},
+    ]
+
+
 def test_repeated_language_changes_keep_the_original_order():
     audio = np.arange(24 * SAMPLE_RATE, dtype=np.float32)
 

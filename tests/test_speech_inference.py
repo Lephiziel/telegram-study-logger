@@ -18,6 +18,7 @@ import pytest
 from conftest import message
 
 from tgstudy.exporter import export_dirty
+import tgstudy.transcribe as speech_module
 from tgstudy.transcribe import Transcriber
 from tgstudy.worker import Worker
 
@@ -25,6 +26,21 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("TGSTUDY_REAL_SPEECH") != "1",
     reason="Opt-in real speech inference downloads test-only models",
 )
+
+
+@pytest.fixture(autouse=True)
+def trace_language_boundaries(tmp_path, monkeypatch):
+    original = speech_module.language_regions
+
+    def observed(model, audio, speech, languages):
+        regions = original(model, audio, speech, languages)
+        (tmp_path / "language-boundaries.json").write_text(
+            json.dumps({"speech": speech, "regions": regions}, indent=2),
+            encoding="utf-8",
+        )
+        return regions
+
+    monkeypatch.setattr(speech_module, "language_regions", observed)
 
 
 @pytest.fixture(scope="module")
@@ -148,11 +164,14 @@ async def test_real_mixed_speech_keeps_both_languages_in_exports(
     row = store.get(cfg.chat_id, 1)
     assert row["transcription_state"] == "done", row["error"]
     text = row["transcript"].lower()
+    # These names are homophones: test retention of the spoken name, rather
+    # than requiring ASR to infer one spelling from the same pronunciation.
+    assert any(name in text for name in ("aiden", "aidan")), text
     for phrase in [
         "hello",
-        "aiden",
         "test voice message",
         "beginning is saved",
+        "когда я начинаю",
         "говорить по-русски",
         "обе части сообщения",
         "расшифровке",

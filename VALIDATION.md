@@ -2,8 +2,8 @@
 
 ## Version 0.5.0 — 2026-10-19
 
-- Linux: 121 fast tests passed; the five opt-in real-model inference tests were
-  skipped. The ASR engine is unchanged in this release.
+- Linux: 123 fast tests passed; the five opt-in real-model inference tests were
+  skipped locally and are exercised by the dedicated GitHub Actions job.
 - Added coverage for legacy configuration, independent per-chat import floors and
   persisted cursors, reconnect/deduplication after reloading the configuration,
   and separate Markdown/JSONL exports with overlapping message IDs.
@@ -18,9 +18,21 @@
   chats, and stop/disconnect completed cleanly.
 - Built the 0.5.0 wheel. Tests use fake Telegram connections and an ASR stub; an
   actual private channel and the user's local installation were not accessed.
-- Windows/macOS validation is delegated to the existing GitHub Actions matrix;
-  check the run for this commit for its result. The historical real-ASR fixture
-  failures described below are not claimed fixed by the multi-chat release.
+- Windows, macOS and Linux passed the original 121-test multi-chat suite in CI.
+  The real-ASR PR job exposed a lost greeting despite a passing push run of the
+  same commit. Piper's default noise produced different test waveforms per run.
+- Speech fixtures now disable both Piper noise scales and require two synthesis
+  passes to be byte-identical. Both spellings of the homophone Aiden/Aidan are
+  accepted; retaining the greeting and spoken name remains mandatory. Added a
+  stronger check for the start of the Russian phrase too.
+- Added two failing-before/passing-after regression cases for a delayed language
+  vote selecting a pause after the new-language introduction. Boundary refinement
+  now considers the full four-second language-detection context instead of only
+  1.5 seconds. The Whisper model and decoder settings are unchanged.
+- Failed real-ASR jobs retain synthetic WAV/OGG/MP4 files, per-chat databases,
+  language boundaries and JUnit results as a seven-day diagnostics artifact.
+  Check [PR #1](https://github.com/Lephiziel/telegram-study-logger/pull/1) for the
+  latest three-platform and real-ASR results; historical failures remain below.
 
 ## Version 0.4.1 — 2026-10-06
 
