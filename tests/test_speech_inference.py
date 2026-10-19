@@ -4,6 +4,8 @@ Run with TGSTUDY_REAL_SPEECH=1 after installing the speech-test extra.
 Downloads test-only Piper voices and Whisper small; needs no Telegram account.
 """
 
+import hashlib
+import io
 import json
 import os
 import shutil
@@ -39,6 +41,7 @@ def speech_models(tmp_path_factory):
     )
     voices = root / "tts"
     voices.mkdir(parents=True, exist_ok=True)
+    fixtures = tmp_path_factory.mktemp("speech-fixtures")
     samples = []
     for name, text in [
         (
@@ -55,11 +58,27 @@ def speech_models(tmp_path_factory):
     ]:
         download_voice(name, voices)
         voice = PiperVoice.load(voices / (name + ".onnx"))
-        path = root / (name + "-fixture.wav")
-        with wave.open(str(path), "wb") as out:
-            voice.synthesize_wav(
-                text, out, syn_config=SynthesisConfig(length_scale=1.5)
-            )
+        # Piper defaults randomize phoneme durations and waveform noise. That
+        # made push/PR jobs exercise different audio for the same commit.
+        # Generate twice and require identical bytes before testing ASR.
+        recordings = []
+        for _ in range(2):
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as out:
+                voice.synthesize_wav(
+                    text,
+                    out,
+                    syn_config=SynthesisConfig(
+                        length_scale=1.5, noise_scale=0.0, noise_w_scale=0.0
+                    ),
+                )
+            recordings.append(buffer.getvalue())
+        assert recordings[0] == recordings[1], (
+            f"Non-deterministic Piper fixture: {name}"
+        )
+        path = fixtures / (name + "-fixture.wav")
+        path.write_bytes(recordings[0])
+        print(f"{name} fixture sha256: {hashlib.sha256(recordings[0]).hexdigest()}")
         samples.append(decode_audio(str(path), sampling_rate=16000))
     model = WhisperModel(
         "small",
