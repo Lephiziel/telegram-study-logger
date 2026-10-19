@@ -69,7 +69,10 @@ async def to_record(message, cfg: Config) -> dict:
         "date_local": local.isoformat(),
         "sender_id": message.sender_id,
         "sender": name,
-        "outgoing": int(message.sender_id == cfg.own_id),
+        "outgoing": int(
+            message.sender_id == cfg.own_id
+            or (cfg.own_posts and message.fwd_from is None)
+        ),
         "kind": kind,
         "text": message.raw_text or "",
         "reply_to": message.reply_to_msg_id,

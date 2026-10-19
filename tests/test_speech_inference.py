@@ -4,6 +4,8 @@ Run with TGSTUDY_REAL_SPEECH=1 after installing the speech-test extra.
 Downloads test-only Piper voices and Whisper small; needs no Telegram account.
 """
 
+import hashlib
+import io
 import json
 import os
 import shutil
@@ -16,6 +18,7 @@ import pytest
 from conftest import message
 
 from tgstudy.exporter import export_dirty
+import tgstudy.transcribe as speech_module
 from tgstudy.transcribe import Transcriber
 from tgstudy.worker import Worker
 
@@ -23,6 +26,21 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("TGSTUDY_REAL_SPEECH") != "1",
     reason="Opt-in real speech inference downloads test-only models",
 )
+
+
+@pytest.fixture(autouse=True)
+def trace_language_boundaries(tmp_path, monkeypatch):
+    original = speech_module.language_regions
+
+    def observed(model, audio, speech, languages):
+        regions = original(model, audio, speech, languages)
+        (tmp_path / "language-boundaries.json").write_text(
+            json.dumps({"speech": speech, "regions": regions}, indent=2),
+            encoding="utf-8",
+        )
+        return regions
+
+    monkeypatch.setattr(speech_module, "language_regions", observed)
 
 
 @pytest.fixture(scope="module")
@@ -39,6 +57,7 @@ def speech_models(tmp_path_factory):
     )
     voices = root / "tts"
     voices.mkdir(parents=True, exist_ok=True)
+    fixtures = tmp_path_factory.mktemp("speech-fixtures")
     samples = []
     for name, text in [
         (
@@ -55,11 +74,27 @@ def speech_models(tmp_path_factory):
     ]:
         download_voice(name, voices)
         voice = PiperVoice.load(voices / (name + ".onnx"))
-        path = root / (name + "-fixture.wav")
-        with wave.open(str(path), "wb") as out:
-            voice.synthesize_wav(
-                text, out, syn_config=SynthesisConfig(length_scale=1.5)
-            )
+        # Piper defaults randomize phoneme durations and waveform noise. That
+        # made push/PR jobs exercise different audio for the same commit.
+        # Generate twice and require identical bytes before testing ASR.
+        recordings = []
+        for _ in range(2):
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as out:
+                voice.synthesize_wav(
+                    text,
+                    out,
+                    syn_config=SynthesisConfig(
+                        length_scale=1.5, noise_scale=0.0, noise_w_scale=0.0
+                    ),
+                )
+            recordings.append(buffer.getvalue())
+        assert recordings[0] == recordings[1], (
+            f"Non-deterministic Piper fixture: {name}"
+        )
+        path = fixtures / (name + "-fixture.wav")
+        path.write_bytes(recordings[0])
+        print(f"{name} fixture sha256: {hashlib.sha256(recordings[0]).hexdigest()}")
         samples.append(decode_audio(str(path), sampling_rate=16000))
     model = WhisperModel(
         "small",
@@ -129,11 +164,14 @@ async def test_real_mixed_speech_keeps_both_languages_in_exports(
     row = store.get(cfg.chat_id, 1)
     assert row["transcription_state"] == "done", row["error"]
     text = row["transcript"].lower()
+    # These names are homophones: test retention of the spoken name, rather
+    # than requiring ASR to infer one spelling from the same pronunciation.
+    assert any(name in text for name in ("aiden", "aidan")), text
     for phrase in [
         "hello",
-        "aiden",
         "test voice message",
         "beginning is saved",
+        "когда я начинаю",
         "говорить по-русски",
         "обе части сообщения",
         "расшифровке",
@@ -182,6 +220,9 @@ def test_real_long_english_russian_english_keeps_beginning_middle_and_end(
     transcriber = Transcriber(cfg, tmp_path)
     transcriber.model = model
     result = transcriber.run(path)
+    (tmp_path / "transcription-result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     languages = [s["language"] for s in result["segments"]]
     changes = [
         language
@@ -195,4 +236,4 @@ def test_real_long_english_russian_english_keeps_beginning_middle_and_end(
     assert text.startswith("hello")
     assert "говорить по-русски" in text and "обе части сообщения" in text
     assert text.rfind("beginning is saved") > text.rfind("расшифровке")
-    assert text.count("test voice message") == 5
+    assert text.count("test voice message") == 5, result["text"]

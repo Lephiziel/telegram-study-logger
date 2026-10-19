@@ -26,3 +26,4 @@ watcher-stop
 temporary-media/
 media-cache/
 .speech-test-cache/
+.speech-test-results/

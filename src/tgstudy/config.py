@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -50,6 +50,14 @@ def atomic_text(path: Path, text: str) -> None:
 
 
 @dataclass
+class Chat:
+    chat_id: int
+    chat_title: str
+    history_since: str | None = None
+    own_posts: bool = False
+
+
+@dataclass
 class Config:
     api_id: int
     api_hash: str
@@ -81,8 +89,44 @@ class Config:
             "Telegram Desktop",
         ]
     )
+    own_posts: bool = False
+    extra_chats: list[Chat] = field(default_factory=list)
+
+    def chat_configs(self) -> list[Config]:
+        """Independent chat scopes sharing one account and speech settings."""
+        return [replace(self, extra_chats=[])] + [
+            replace(self, **asdict(chat), extra_chats=[]) for chat in self.extra_chats
+        ]
+
+    def select_chat(self, chat_id: int) -> Config:
+        for cfg in self.chat_configs():
+            if cfg.chat_id == chat_id:
+                return cfg
+        raise ValueError("Этот чат не подключён; выполни chats list")
 
     def validate(self) -> None:
+        if not isinstance(self.own_posts, bool):
+            raise ValueError("own_posts должен быть true или false")
+        ids = {self.chat_id}
+        for chat in self.extra_chats:
+            if not isinstance(chat, Chat) or chat.chat_id in ids:
+                raise ValueError("Список чатов содержит повтор или неверную запись")
+            if (
+                isinstance(chat.chat_id, bool)
+                or not isinstance(chat.chat_id, int)
+                or not chat.chat_id
+            ):
+                raise ValueError("Некорректный ID чата")
+            if not isinstance(chat.chat_title, str) or not chat.chat_title:
+                raise ValueError("Нужно название чата")
+            if not isinstance(chat.own_posts, bool):
+                raise ValueError("own_posts должен быть true или false")
+            if (
+                chat.history_since
+                and datetime.fromisoformat(chat.history_since).tzinfo is None
+            ):
+                raise ValueError("history_since должен включать часовой пояс")
+            ids.add(chat.chat_id)
         if not isinstance(self.multilingual, bool):
             raise ValueError("multilingual должен быть true или false")
         if (
@@ -140,7 +184,9 @@ class Config:
 
     @classmethod
     def load(cls, root: Path) -> Config:
-        obj = cls(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+        values = json.loads((root / "config.json").read_text(encoding="utf-8"))
+        values["extra_chats"] = [Chat(**chat) for chat in values.get("extra_chats", [])]
+        obj = cls(**values)
         obj.validate()
         return obj
 

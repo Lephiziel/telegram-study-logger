@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo
 import portalocker
 from telethon import TelegramClient, utils
 
-from .config import Config, data_dir, default_timezone, status_write
+from . import __version__
+from .config import Chat, Config, data_dir, default_timezone, status_write
 from .control import instance_running, lock, maintenance
 from .exporter import export_dirty
 from .history import export_history
@@ -22,12 +23,99 @@ from .startup import install_autostart, remove_autostart
 from .store import Store
 from .transcribe import Transcriber
 from .watcher import telegram_running, watch
-from .worker import run_worker, sync_now
+from .worker import run_worker, sync_now, telegram_client
 
 
 def prompt(label: str, default: str = "") -> str:
     value = input(label + (f" [{default}]" if default else "") + ": ").strip()
     return value or default
+
+
+async def choose_chat(client):
+    print("\nВведи часть названия чата или канала. Enter покажет все чаты.")
+    while True:
+        search = prompt("Поиск").casefold()
+        matches = [
+            dialog
+            async for dialog in client.iter_dialogs()
+            if search in (dialog.name or "").casefold()
+        ]
+        if not matches:
+            print("Совпадений нет; попробуй другое имя.")
+            continue
+        for index, dialog in enumerate(matches, 1):
+            print(f"{index}. {dialog.name} (id={dialog.id})")
+        choice = prompt("Номер чата (Enter = новый поиск)")
+        if choice.isdigit() and 1 <= int(choice) <= len(matches):
+            selected = matches[int(choice) - 1]
+            await client.get_input_entity(selected.entity)
+            return selected
+
+
+async def add_chat(root: Path, cfg: Config, *, days=None, own_posts=None):
+    days = (
+        days
+        if days is not None
+        else (1 if cfg.export_mode == "daily" else cfg.history_days)
+    )
+    _, _, start, _ = day_window(cfg.timezone, days)
+    client = telegram_client(cfg, root)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError("AuthorizationRequiredRunSetup")
+        if (await client.get_me()).id != cfg.own_id:
+            raise RuntimeError("SessionAccountMismatchRunSetup")
+        selected = await choose_chat(client)
+        chat_id = utils.get_peer_id(selected.entity)
+        if chat_id in {c.chat_id for c in cfg.chat_configs()}:
+            print("Этот чат уже подключён.")
+            return
+        broadcast = bool(getattr(selected.entity, "broadcast", False))
+        if own_posts and not broadcast:
+            raise ValueError("--own-posts предназначен только для личного канала")
+        if own_posts is None:
+            own_posts = broadcast and prompt(
+                "В канале только твои записи? y/n (y = отмечать посты как твой output)",
+                "n",
+            ).lower() in {"y", "yes", "д", "да"}
+        cfg.extra_chats.append(
+            Chat(
+                chat_id,
+                selected.name or str(chat_id),
+                start.isoformat() if start else None,
+                bool(own_posts),
+            )
+        )
+        cfg.save(root)
+        store = Store(root / "journal.sqlite3")
+        try:
+            store.reset_cursor(chat_id)
+            export_dirty(store, cfg.select_chat(chat_id))
+        finally:
+            store.close()
+        print(
+            f"Подключён: {selected.name}. Выгрузка: {Path(cfg.output_dir) / str(chat_id)}"
+        )
+        print(
+            "Выполни sync для немедленной догрузки. При открытом Telegram она также начнётся автоматически."
+        )
+    finally:
+        await client.disconnect()
+
+
+def remove_chat(root: Path, cfg: Config, chat_id: int):
+    cfg.select_chat(chat_id)  # Reject unknown IDs before changing anything.
+    if chat_id == cfg.chat_id:
+        if not cfg.extra_chats:
+            raise ValueError("Нельзя отключить последний чат")
+        promoted = cfg.extra_chats.pop(0)
+        cfg.chat_id, cfg.chat_title = promoted.chat_id, promoted.chat_title
+        cfg.history_since, cfg.own_posts = promoted.history_since, promoted.own_posts
+    else:
+        cfg.extra_chats = [chat for chat in cfg.extra_chats if chat.chat_id != chat_id]
+    cfg.save(root)
+    print("Чат отключён. Его архив сохранён.")
 
 
 def choose_mode(cfg: Config):
@@ -49,8 +137,9 @@ def save_mode(root: Path, cfg: Config):
     cfg.save(root)
     store = Store(root / "journal.sqlite3")
     try:
-        store.reset_cursor(cfg.chat_id)
-        export_dirty(store, cfg)
+        for scoped in cfg.chat_configs():
+            store.reset_cursor(scoped.chat_id)
+            export_dirty(store, scoped)
     finally:
         store.close()
 
@@ -77,7 +166,7 @@ async def setup(root: Path):
         api_id,
         api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.4.1",
+        app_version=__version__,
     )
     try:
         # This is the only place allowed to prompt for account authorization.
@@ -158,10 +247,18 @@ async def setup(root: Path):
             language=None if lang == "auto" else lang,
             multilingual=lang == "auto",
         )
+        if previous and previous.own_id == me.id:
+            cfg.extra_chats = [
+                c for c in previous.extra_chats if c.chat_id != cfg.chat_id
+            ]
+            for scoped in previous.chat_configs():
+                if scoped.chat_id == cfg.chat_id:
+                    cfg.own_posts = scoped.own_posts
         set_period(cfg, mode, days)
         store = Store(root / "journal.sqlite3")
         try:
-            store.reset_cursor(cfg.chat_id)
+            for scoped in cfg.chat_configs():
+                store.reset_cursor(scoped.chat_id)
         finally:
             store.close()
         Path(output).mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -208,7 +305,7 @@ def main():
     if os.name != "nt":
         os.umask(0o077)
     parser = argparse.ArgumentParser(
-        description="Автоматический локальный журнал одного Telegram-чата"
+        description="Автоматический локальный журнал выбранных Telegram-чатов"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in (
@@ -220,9 +317,25 @@ def main():
         "status",
         "retry",
         "paths",
-        "sync",
     ):
         sub.add_parser(name)
+    chats = sub.add_parser("chats", help="Подключить дополнительные чаты и каналы")
+    chat_actions = chats.add_subparsers(dest="action", required=True)
+    chat_actions.add_parser("list")
+    chat_add = chat_actions.add_parser("add")
+    chat_add.add_argument(
+        "--days", type=int, help="Глубина первого импорта; 0 = вся история"
+    )
+    chat_add.add_argument(
+        "--own-posts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Личный канал: считать его посты своими (кроме пересылок)",
+    )
+    chat_remove = chat_actions.add_parser("remove")
+    chat_remove.add_argument("chat_id", type=int)
+    sync = sub.add_parser("sync")
+    sync.add_argument("--chat-id", type=int, help="Догрузить только этот чат")
     period = sub.add_parser("mode", help="Выбрать режим без повторной авторизации")
     period.add_argument("mode", choices=["daily", "history"])
     period.add_argument(
@@ -231,6 +344,7 @@ def main():
     export = sub.add_parser(
         "export", help="Пересоздать архив или выгрузить период из Telegram"
     )
+    export.add_argument("--chat-id", type=int, help="Выгрузить только этот чат")
     period_args = export.add_mutually_exclusive_group()
     period_args.add_argument(
         "--days", type=int, help="Разовая выгрузка из Telegram за N дней"
@@ -251,6 +365,9 @@ def main():
     retranscribe = sub.add_parser(
         "retranscribe", help="Заново распознать сохранённые записи"
     )
+    retranscribe.add_argument(
+        "--chat-id", type=int, help="Повторить ASR только в этом чате"
+    )
     scope = retranscribe.add_mutually_exclusive_group(required=True)
     scope.add_argument("--days", type=int, help="N дней, включая сегодня; 0 = всё")
     scope.add_argument("--today", action="store_true")
@@ -264,7 +381,28 @@ def main():
     root = data_dir()
     configure_logging(root)
     try:
-        if args.cmd == "settings":
+        if args.cmd == "chats":
+            cfg = Config.load(root)
+            if args.action == "list":
+                for scoped in cfg.chat_configs():
+                    print(f"{scoped.chat_id}: {scoped.chat_title}")
+                    print(f"  Экспорт: {Path(scoped.output_dir) / str(scoped.chat_id)}")
+                    if scoped.own_posts:
+                        print(
+                            "  Посты канала отмечаются как свои; пересылки исключены."
+                        )
+            else:
+                with maintenance(root):
+                    cfg = Config.load(root)
+                    if args.action == "add":
+                        asyncio.run(
+                            add_chat(
+                                root, cfg, days=args.days, own_posts=args.own_posts
+                            )
+                        )
+                    else:
+                        remove_chat(root, cfg, args.chat_id)
+        elif args.cmd == "settings":
             # Also used by the installer for upgrades; an old watcher must exit first.
             remove_autostart(root)
             with lock(root, "watcher", timeout=70), lock(root, "worker", timeout=70):
@@ -312,6 +450,9 @@ def main():
             )
             if (root / "config.json").exists():
                 cfg = Config.load(root)
+                print(
+                    f"Подключено чатов: {len(cfg.chat_configs())}; список: tgstudy chats list"
+                )
                 print(f"Наблюдатель запущен: {instance_running(root, 'watcher')}")
                 print(f"Обработчик запущен: {instance_running(root, 'worker')}")
                 print(f"Telegram найден: {telegram_running(cfg.process_names)}")
@@ -326,6 +467,8 @@ def main():
                 )
         elif args.cmd == "sync":
             cfg = Config.load(root)
+            if args.chat_id is not None:
+                cfg = cfg.select_chat(args.chat_id)
             print("Догрузка сообщений из Telegram…", flush=True)
             with maintenance(root):
                 count = asyncio.run(sync_now(root, cfg))
@@ -361,12 +504,11 @@ def main():
                 cfg.save(root)
                 store = Store(root / "journal.sqlite3")
                 try:
-                    count = (
-                        store.exclude_videos(cfg.chat_id)
-                        if not cfg.transcribe_videos
-                        else 0
-                    )
-                    export_dirty(store, cfg)
+                    count = 0
+                    for scoped in cfg.chat_configs():
+                        if not cfg.transcribe_videos:
+                            count += store.exclude_videos(scoped.chat_id)
+                        export_dirty(store, scoped)
                 finally:
                     store.close()
             print(
@@ -374,6 +516,12 @@ def main():
             )
         elif args.cmd == "retranscribe":
             cfg = Config.load(root)
+            if args.chat_id is not None:
+                cfg = cfg.select_chat(args.chat_id)
+            elif args.message_id is not None and cfg.extra_chats:
+                parser.error(
+                    "С --message-id укажи --chat-id: номера сообщений повторяются в разных чатах"
+                )
             if args.message_id is not None and args.message_id <= 0:
                 parser.error("--message-id должен быть положительным")
             days = 1 if args.today else args.days or 0
@@ -381,18 +529,20 @@ def main():
             with maintenance(root):
                 store = Store(root / "journal.sqlite3")
                 try:
-                    if not cfg.transcribe_videos:
-                        store.exclude_videos(cfg.chat_id)
-                    count = store.retranscribe(
-                        cfg.chat_id,
-                        start,
-                        end,
-                        unexpected_languages=cfg.speech_languages
-                        if args.unexpected_languages
-                        else None,
-                        message_id=args.message_id,
-                    )
-                    export_dirty(store, cfg)
+                    count = 0
+                    for scoped in cfg.chat_configs():
+                        if not scoped.transcribe_videos:
+                            store.exclude_videos(scoped.chat_id)
+                        count += store.retranscribe(
+                            scoped.chat_id,
+                            start,
+                            end,
+                            unexpected_languages=cfg.speech_languages
+                            if args.unexpected_languages
+                            else None,
+                            message_id=args.message_id,
+                        )
+                        export_dirty(store, scoped)
                 finally:
                     store.close()
             print(
@@ -412,6 +562,8 @@ def main():
             )
         elif args.cmd in {"export", "retry"}:
             cfg = Config.load(root)
+            if getattr(args, "chat_id", None) is not None:
+                cfg = cfg.select_chat(args.chat_id)
             if args.cmd == "export" and (args.days is not None or args.today):
                 days = 1 if args.today else args.days
                 if days < 0:
@@ -421,20 +573,26 @@ def main():
                     flush=True,
                 )
                 with maintenance(root):
-                    path, count, errors = asyncio.run(export_history(root, cfg, days))
-                print(
-                    f"Выгружено сообщений: {count}; ошибок расшифровки: {errors}. Файл: {path}"
-                )
+                    for scoped in cfg.chat_configs():
+                        path, count, errors = asyncio.run(
+                            export_history(root, scoped, days)
+                        )
+                        print(
+                            f"Выгружено сообщений: {count}; ошибок расшифровки: {errors}. Файл: {path}"
+                        )
                 return
             with maintenance(root):
                 store = Store(root / "journal.sqlite3")
                 try:
-                    if args.cmd == "retry":
-                        store.retry_errors(cfg.chat_id)
-                        print("Ошибки поставлены в очередь на повторную обработку.")
-                    else:
-                        store.mark_all_dirty(cfg.chat_id)
-                        print(f"Пересоздано дней: {export_dirty(store, cfg)}")
+                    for scoped in cfg.chat_configs():
+                        if args.cmd == "retry":
+                            store.retry_errors(scoped.chat_id)
+                            print(f"{scoped.chat_title}: ошибки поставлены в очередь.")
+                        else:
+                            store.mark_all_dirty(scoped.chat_id)
+                            print(
+                                f"{scoped.chat_title}: пересоздано дней: {export_dirty(store, scoped)}"
+                            )
                 finally:
                     store.close()
         else:

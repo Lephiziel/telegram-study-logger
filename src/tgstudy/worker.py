@@ -9,6 +9,7 @@ from pathlib import Path
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 
+from . import __version__
 from .capture import media_key, to_record
 from .config import Config, status_write
 from .exporter import export_dirty
@@ -31,7 +32,7 @@ def telegram_client(cfg: Config, root: Path):
         cfg.api_id,
         cfg.api_hash,
         device_model="Telegram Study Logger",
-        app_version="0.4.1",
+        app_version=__version__,
         flood_sleep_threshold=60,
         catch_up=True,
     )
@@ -92,6 +93,8 @@ class Worker:
             if message is None:
                 message = self.observed_media.get(key)
             if message is None:
+                if self.peer is None:
+                    self.peer = await self.client.get_input_entity(self.cfg.chat_id)
                 message = await self.client.get_messages(
                     self.peer, ids=job["message_id"]
                 )
@@ -148,6 +151,8 @@ class Worker:
         self.last_sync_count = count
 
     async def sync_once(self):
+        if self.peer is None:
+            self.peer = await self.client.get_input_entity(self.cfg.chat_id)
         # Show the newest messages first, even if the initial import is long.
         # Refresh never advances the ordered history checkpoint.
         await self.refresh_recent()
@@ -335,12 +340,116 @@ class Worker:
             )
 
 
+class MultiWorker:
+    """One Telegram session and one ASR model, independent history for each chat."""
+
+    def __init__(self, client, cfg: Config, root: Path, store: Store, transcriber=None):
+        self.client = client
+        self.cfg = cfg
+        self.root = root
+        self.store = store
+        self.stop = asyncio.Event()
+        transcriber = transcriber or Transcriber(cfg, root)
+        self.workers = {
+            scoped.chat_id: Worker(client, scoped, root, store, transcriber)
+            for scoped in cfg.chat_configs()
+        }
+        # Cache limits apply across chats; no worker may prune another's active audio.
+        active_media = set()
+        for worker in self.workers.values():
+            worker.stop = self.stop
+            worker.active_media = active_media
+
+    async def on_message(self, event):
+        worker = self.workers.get(event.chat_id)
+        if worker and not self.stop.is_set():
+            try:
+                await worker.ingest(event.message)
+            except Exception as exc:
+                log.warning("Message update failed: %s", type(exc).__name__)
+
+    async def transcription_loop(self):
+        # Round-robin prevents a long backlog in one chat from starving another.
+        while not self.stop.is_set():
+            processed = False
+            for worker in self.workers.values():
+                if self.stop.is_set():
+                    break
+                job = self.store.next_job(worker.cfg.chat_id)
+                if job:
+                    await worker.process_job(job)
+                    processed = True
+            if not processed:
+                await next(iter(self.workers.values())).wait(2)
+
+    def export_status(self, state):
+        chats = []
+        for worker in self.workers.values():
+            export_dirty(self.store, worker.cfg)
+            chats.append(
+                {
+                    "chat_id": worker.cfg.chat_id,
+                    "last_sync": worker.last_sync,
+                    "last_sync_count": worker.last_sync_count,
+                    "history_cursor": self.store.cursor(worker.cfg.chat_id),
+                    "current_job": worker.current_job,
+                    "history_error": worker.history_error,
+                    "counts": self.store.counts(worker.cfg.chat_id),
+                }
+            )
+        status_write(self.root, state=state, chats=chats)
+
+    async def export_loop(self):
+        while not self.stop.is_set():
+            self.export_status("working")
+            await next(iter(self.workers.values())).wait(3)
+
+    async def run(self, stop_file: Path):
+        tasks = []
+        try:
+            await self.client.connect()
+            if not await self.client.is_user_authorized():
+                raise RuntimeError("AuthorizationRequiredRunSetup")
+            if (await self.client.get_me()).id != self.cfg.own_id:
+                raise RuntimeError("SessionAccountMismatchRunSetup")
+            for worker in self.workers.values():
+                try:
+                    worker.peer = await self.client.get_input_entity(worker.cfg.chat_id)
+                except Exception as exc:
+                    # An inaccessible channel must not disable the other chats.
+                    # history_loop retries entity resolution on its next pass.
+                    worker.history_error = type(exc).__name__
+            # Dispatch by exact marked chat ID; only selected chats are ingested.
+            self.client.add_event_handler(self.on_message, events.NewMessage())
+            self.client.add_event_handler(self.on_message, events.MessageEdited())
+            coros = [
+                self.transcription_loop(),
+                self.export_loop(),
+                next(iter(self.workers.values())).stop_monitor(stop_file),
+                self.client.run_until_disconnected(),
+            ]
+            for worker in self.workers.values():
+                coros.extend([worker.history_loop(), worker.media_loop()])
+            tasks = [asyncio.create_task(coro) for coro in coros]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            self.stop.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.client.disconnect()
+            self.export_status("paused")
+
+
 async def run_worker(root: Path, stop_file: Path):
     cfg = Config.load(root)
     store = Store(root / "journal.sqlite3")
     client = telegram_client(cfg, root)
     try:
-        await Worker(client, cfg, root, store).run(stop_file)
+        runner = MultiWorker if cfg.extra_chats else Worker
+        await runner(client, cfg, root, store).run(stop_file)
     finally:
         await client.disconnect()
         store.close()
@@ -351,21 +460,35 @@ async def sync_now(root: Path, cfg: Config):
     store = Store(root / "journal.sqlite3")
     client = telegram_client(cfg, root)
     try:
-        worker = Worker(client, cfg, root, store)
-        status_write(root, state="syncing", chat_id=cfg.chat_id)
-        await worker.connect()
-        await worker.sync_once()
-        export_dirty(store, cfg)
+        chats = []
+        count = 0
+        for scoped in cfg.chat_configs():
+            worker = Worker(client, scoped, root, store)
+            status_write(root, state="syncing", chat_id=scoped.chat_id)
+            await worker.connect()
+            await worker.sync_once()
+            export_dirty(store, scoped)
+            count += worker.last_sync_count
+            chats.append(
+                {
+                    "chat_id": scoped.chat_id,
+                    "last_sync": worker.last_sync,
+                    "last_sync_count": worker.last_sync_count,
+                    "history_cursor": store.cursor(scoped.chat_id),
+                    "counts": store.counts(scoped.chat_id),
+                }
+            )
         status_write(
             root,
             state="synced",
             chat_id=cfg.chat_id,
             last_sync=worker.last_sync,
-            last_sync_count=worker.last_sync_count,
+            last_sync_count=count,
             history_cursor=store.cursor(cfg.chat_id),
             counts=store.counts(cfg.chat_id),
+            chats=chats,
         )
-        return worker.last_sync_count
+        return count
     except Exception as exc:
         status_write(root, state="sync_error", error=type(exc).__name__)
         raise

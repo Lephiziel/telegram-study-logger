@@ -1,4 +1,47 @@
-# Validation — 2026-10-06
+# Validation
+
+## Version 0.5.0 — 2026-10-19
+
+- Linux: 125 fast tests passed; the five opt-in real-model inference tests were
+  skipped locally and are exercised by the dedicated GitHub Actions job.
+- Added coverage for legacy configuration, independent per-chat import floors and
+  persisted cursors, reconnect/deduplication after reloading the configuration,
+  and separate Markdown/JSONL exports with overlapping message IDs.
+- Exercised live message routing, an ignored unselected chat, voice/video-note
+  processing with the same message ID in two chats, media cache isolation, caption
+  edits retaining transcripts, and explicit authorship for personal channel posts.
+- Tested adding a channel using an existing authenticated session, rejecting a
+  duplicate, safe chat removal/promotion while retaining archives, and requiring
+  a chat ID before reprocessing a particular message in a multi-chat setup.
+- Ran the background multi-chat lifecycle with both chats available and with one
+  channel unavailable; the remaining chat synchronized, status included both
+  chats, and stop/disconnect completed cleanly.
+- Built the 0.5.0 wheel. Tests use fake Telegram connections and an ASR stub; an
+  actual private channel and the user's local installation were not accessed.
+- Windows, macOS and Linux passed the original 121-test multi-chat suite in CI.
+  The real-ASR PR job exposed a lost greeting despite a passing push run of the
+  same commit. Piper's default noise produced different test waveforms per run.
+- Speech fixtures now disable both Piper noise scales and require two synthesis
+  passes to be byte-identical. Both spellings of the homophone Aiden/Aidan are
+  accepted; retaining the greeting and spoken name remains mandatory. Added a
+  stronger check for the start of the Russian phrase too.
+- Added two failing-before/passing-after regression cases for a delayed language
+  vote selecting a pause after the new-language introduction. Boundary refinement
+  now considers the full four-second language-detection context instead of only
+  1.5 seconds. The Whisper model and decoder settings are unchanged.
+- Offline replay of the retained synthetic long recording exposed another loss:
+  a 17-second English clip containing two utterances returned only the first
+  eight seconds. Long clips now compare their decoded tail against VAD speech;
+  if at least one second of voiced audio is uncovered, they are re-decoded in
+  smaller partitions with bounded retry depth. The original hypothesis is
+  discarded to avoid duplicates; trailing silence does not trigger recovery.
+  Recovered segments include `coverage_retried` in JSONL metadata.
+- Failed real-ASR jobs retain synthetic WAV/OGG/MP4 files, per-chat databases,
+  language boundaries and JUnit results as a seven-day diagnostics artifact.
+  Check [PR #1](https://github.com/Lephiziel/telegram-study-logger/pull/1) for the
+  latest three-platform and real-ASR results; historical failures remain below.
+
+## Version 0.4.1 — 2026-10-06
 
 Tested locally on Linux x86_64 with Python 3.12.14. Updated for version 0.4.1.
 The same test suite also runs natively in the repository's three-OS GitHub Actions matrix.

@@ -2,7 +2,7 @@
 
 [![Cross-platform checks](https://github.com/Lephiziel/telegram-study-logger/actions/workflows/tests.yml/badge.svg)](https://github.com/Lephiziel/telegram-study-logger/actions/workflows/tests.yml)
 
-Automatically export one Telegram chat to readable Markdown and JSONL, with local
+Automatically export selected Telegram chats and channels to Markdown and JSONL, with local
 transcription of voice messages and video notes (ordinary videos are opt-in). Useful for
 reviewing conversations while learning a language.
 
@@ -17,6 +17,48 @@ loaded inside Telegram Desktop or a signed Windows/macOS application.
 The current setup prompts and exported labels are in Russian; commands work as
 shown below.
 
+
+## Version 0.5.0: multiple chats and a private practice channel
+
+Speech boundary refinement also covers delayed language changes without cutting
+off the introduction. If a long decode silently omits a spoken tail, VAD coverage
+triggers a bounded retry on smaller partitions; silence alone does not. Recovered
+segments carry `coverage_retried` in JSONL. Verbatim accuracy is still not guaranteed.
+
+Keep logging your conversation and add a separate channel for your own practice.
+Upgrade the installed package using the instructions below, then run:
+
+```bash
+TGSTUDY_PY="$HOME/.local/share/telegram-study-logger/runtime/bin/python"
+"$TGSTUDY_PY" -m tgstudy chats add --days 7 --own-posts
+"$TGSTUDY_PY" -m tgstudy sync
+"$TGSTUDY_PY" -m tgstudy chats list
+```
+
+Search for the channel name and select its number. The existing session is reused;
+your current chat stays connected. `--days 7` imports seven calendar dates; use
+`--days 0` for all available history. Without `--days`, the current automatic mode
+determines the initial range (today for daily mode).
+
+Use `--own-posts` **only for a personal channel containing your own recordings and
+texts**. Channel posts often identify the channel as their sender; this option
+marks non-forwarded posts as your own output. Omit it for chats or shared channels;
+the interactive command asks about authorship for a channel. Forwarded posts keep
+their forwarded flag and are not treated as your own channel posts.
+
+Each chat has its own `<output folder>/<chat ID>/today.md` (in daily mode), dated
+files, JSONL, checkpoint and media cache. The same message number in different
+chats remains separate. One account session and one ASR model handle all chats;
+history sync is independent, and ASR takes turns between chats. Voice and video
+notes are transcribed; ordinary video attachments still require `videos on`.
+
+`sync`, `export`, `retry`, and period-wide `retranscribe` work on all connected
+chats by default. `sync`, `export`, and `retranscribe` accept `--chat-id ID`.
+With several chats, `retranscribe --message-id N` also requires `--chat-id ID`
+to avoid selecting a different chat's message. `mode`, `speech`, and `videos`
+apply to all chats. `chats remove ID` disconnects a chat and keeps its archive;
+the last connected chat cannot be removed. `chats add/remove` pause the worker
+safely and preserve startup registration. Keep Telegram open to resume processing.
 
 ## Version 0.4.1: resume after PC shutdown
 
@@ -329,8 +371,8 @@ There is no extra encryption at rest; protect your computer and export folder.
 
 ## Limits and troubleshooting
 
-- Only one selected chat is logged at a time. Changing chat keeps its previous
-  archive. Separate computers do not merge their databases automatically.
+- Several chats/channels can be logged with `chats add`. Archives remain separate.
+  Separate computers do not merge their databases automatically.
 - New/edited messages are updated. The last 200 messages are periodically checked
   for edits made while offline; older edits may require another history import.
   Deletions are not mirrored into the archive. Already deleted messages cannot be

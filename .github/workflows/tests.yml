@@ -35,4 +35,11 @@ jobs:
           path: .speech-test-cache
           key: bilingual-small-piper-1.8-v1
       - run: python -m pip install '.[test,speech-test]'
-      - run: python -m pytest tests/test_speech_inference.py -q
+      - run: python -m pytest tests/test_speech_inference.py -q --basetemp=.speech-test-results --junitxml=.speech-test-results/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: speech-inference-diagnostics
+          path: .speech-test-results/
+          include-hidden-files: true
+          retention-days: 7
